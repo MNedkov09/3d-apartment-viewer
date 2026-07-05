@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+floorplan-detector/node_modules/
+
+# Build outputs
+dist/
+floorplan-detector/dist/
+
+# Package lock files
+package-lock.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+vite-debug.log*
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
