@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import Viewer3D from "./Viewer3D";
+import { OPENCV_URL } from "./hooks/useOpenCv";
 
 const CANVAS_W = 800;
 const CANVAS_H = 600;
@@ -42,7 +43,7 @@ function loadCv() {
       settle(reject)(new Error("OpenCV failed to initialize"));
     };
     const script = document.createElement("script");
-    script.src = "https://docs.opencv.org/4.8.0/opencv.js";
+    script.src = OPENCV_URL;
     script.onerror = () => {
       clearTimeout(timeoutId);
       cvPromise = null;

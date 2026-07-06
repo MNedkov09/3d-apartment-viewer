@@ -6,7 +6,7 @@ import { Vector3, Mesh, MeshBuilder } from "@babylonjs/core";
  */
 export function edgeToWallMesh(edge, opts, scene) {
   const { thickness, height, scale } = opts;
-  if (!edge.points || edge.points.length < 2) return null;
+  if (!edge.points || edge.points.length < 2) return [];
 
   const scaledPoints = edge.points.map(([x, y]) => [x * scale, y * scale]);
 
@@ -36,7 +36,7 @@ export function edgeToWallMesh(edge, opts, scene) {
     meshes.push(box);
   }
 
-  return meshes.length > 0 ? meshes : null;
+  return meshes;
 }
 
 /**
@@ -51,8 +51,7 @@ export function edgeToWallMesh(edge, opts, scene) {
 export function buildWallMeshes(edges, opts, scene) {
   const allMeshes = [];
   for (const edge of edges) {
-    const meshes = edgeToWallMesh(edge, opts, scene);
-    if (meshes) allMeshes.push(...meshes);
+    allMeshes.push(...edgeToWallMesh(edge, opts, scene));
   }
   return allMeshes;
 }

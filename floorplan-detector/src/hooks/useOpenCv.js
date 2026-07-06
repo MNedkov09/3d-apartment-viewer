@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const OPENCV_URL = "https://docs.opencv.org/4.x/opencv.js";
+export const OPENCV_URL = "https://docs.opencv.org/4.x/opencv.js";
 
 /**
  * OpenCV.js quirk #1: it's not a normal ES module. It's a big script that,

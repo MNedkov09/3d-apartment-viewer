@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, useState, useCallback } from "react";
+import { useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Engine,
   Scene,
@@ -34,7 +34,6 @@ export default function Viewer3D({
   const engineRef = useRef(null);
   const sceneRef = useRef(null);
   const wallMeshesRef = useRef([]);
-  const [isLoading, setIsLoading] = useState(true);
   const keysRef = useRef(new Set());
 
   const handleKeyDown = useCallback((e) => {
@@ -220,7 +219,6 @@ export default function Viewer3D({
     });
 
     // ---- Render loop ----
-    setIsLoading(false);
 
     // WASD movement helper
     const _forward = Vector3.Zero();
@@ -320,7 +318,7 @@ export default function Viewer3D({
           outline: "none",
         }}
       />
-      {isLoading && (
+      {(!edges || edges.length === 0) && (
         <div
           style={{
             position: "absolute",
