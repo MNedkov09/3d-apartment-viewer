@@ -8,36 +8,46 @@ const CANVAS_H = 600;
 // OpenCV.js is Emscripten-compiled. It checks window.Module for
 // onRuntimeInitialized. Set it BEFORE the script loads.
 let cvReady = false;
+let cvPromise = null; // shared promise for concurrent callers
 
 function loadCv() {
   if (cvReady) return Promise.resolve();
-  return new Promise((resolve, reject) => {
+  if (cvPromise) return cvPromise; // dedupe: caller waits for the same load
+  cvPromise = new Promise((resolve, reject) => {
     window.Module = window.Module || {};
     window.Module.onRuntimeInitialized = () => {
       cvReady = true;
+      cvPromise = null; // allow future retries
       console.log("OpenCV ready");
       resolve();
     };
     window.Module.onAbort = (err) => {
+      cvPromise = null;
       console.error("OpenCV WASM abort:", err);
       reject(new Error("OpenCV failed to initialize"));
     };
     const script = document.createElement("script");
     script.src = "https://docs.opencv.org/4.8.0/opencv.js";
-    script.onerror = () => reject(new Error("Failed to load OpenCV.js"));
+    script.onerror = () => {
+      cvPromise = null;
+      reject(new Error("Failed to load OpenCV.js"));
+    };
     document.head.appendChild(script);
     const timeoutId = setTimeout(() => {
-      if (!cvReady) reject(new Error("OpenCV.js load timed out"));
+      if (!cvReady) {
+        cvPromise = null;
+        reject(new Error("OpenCV.js load timed out"));
+      }
     }, 30000);
-    // Expose timeoutId so callers can clear it on retry
-    loadCv._timeoutId = timeoutId;
+    script._timeoutId = timeoutId;
   });
+  return cvPromise;
 }
 
 /* ---------- Wall mask extraction ---------- */
 const THRESH_BLOCK = 25; // adaptive threshold block size (odd)
 const THRESH_C = 8; // adaptive threshold constant
-const MIN_AREA = 30; // min area (px^2) to keep a component as wall
+const MIN_AREA = 500; // min area (px^2) to keep a component as wall
 
 /**
  * Build a binary mask of wall-stroke pixels (dropping text by stroke
@@ -490,8 +500,7 @@ function App() {
   const retryCvLoad = async () => {
     setCvLoading(true);
     setCvError("");
-    // Clear any pending timeout from the previous loadCv() call
-    if (loadCv._timeoutId) clearTimeout(loadCv._timeoutId);
+    cvPromise = null; // allow a fresh load
     try {
       await loadCv();
     } catch (err) {

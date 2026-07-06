@@ -20,45 +20,6 @@ import { Vector3, Mesh, MeshBuilder } from "@babylonjs/core";
  * @param {boolean} closed - whether this polyline is a closed loop
  * @returns {Array<[number, number]>} footprint polygon (left side forward, right side reversed)
  */
-export function offsetPolylineToFootprint(points, thickness, closed) {
-  const n = points.length;
-  if (n < 2) return null;
-
-  const half = thickness / 2;
-  const left = [];
-  const right = [];
-
-  for (let i = 0; i < n; i++) {
-    // For closed loops, wrap around; for open polylines, clamp at the ends
-    // (this makes the endpoints use a one-sided direction rather than
-    // reaching past the start/end, giving a clean butt end).
-    const prevIdx = closed ? (i - 1 + n) % n : Math.max(i - 1, 0);
-    const nextIdx = closed ? (i + 1) % n : Math.min(i + 1, n - 1);
-
-    const [px, py] = points[prevIdx];
-    const [nx2, ny2] = points[nextIdx];
-    const dx = nx2 - px;
-    const dy = ny2 - py;
-    const len = Math.hypot(dx, dy) || 1;
-
-    // Perpendicular to the local direction = the offset normal
-    const nx = -dy / len;
-    const ny = dx / len;
-
-    const [x, y] = points[i];
-    left.push([x + nx * half, y + ny * half]);
-    right.push([x - nx * half, y - ny * half]);
-  }
-
-  if (closed) {
-    // Two separate rings: outer (left) and inner (right) — caller builds
-    // a Shape with a hole for this case.
-    return { outer: left, inner: right };
-  }
-
-  // Open polyline: stitch left-forward + right-reversed into one ring
-  return { outer: [...left, ...right.slice().reverse()], inner: null };
-}
 
 /**
  * Build one extruded wall mesh from a single traced edge.
