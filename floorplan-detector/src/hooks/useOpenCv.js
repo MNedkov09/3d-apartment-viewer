@@ -42,24 +42,26 @@ export function useOpenCv() {
     script.onerror = () => setStatus("error");
     document.body.appendChild(script);
 
-    function handleScriptLoad() {
-      // At this point the JS glue code has loaded, but the WASM runtime
-      // may still be compiling/instantiating. cv.onRuntimeInitialized is
-      // the actual "safe to use cv.* now" signal.
-      if (window.cv && window.cv.Mat) {
-        setStatus("ready");
-      } else if (window.cv) {
-        window.cv["onRuntimeInitialized"] = () => setStatus("ready");
-      } else {
-        setStatus("error");
-      }
-    }
-
     return () => {
       // no cleanup needed for the script tag itself; it's fine to keep it
       // cached across mounts
     };
   }, []);
+
+  // Stable callback defined outside the effect so it doesn't need to be
+  // listed in the dependency array — it doesn't close over any outer vars.
+  function handleScriptLoad() {
+    // At this point the JS glue code has loaded, but the WASM runtime
+    // may still be compiling/instantiating. cv.onRuntimeInitialized is
+    // the actual "safe to use cv.* now" signal.
+    if (window.cv && window.cv.Mat) {
+      setStatus("ready");
+    } else if (window.cv) {
+      window.cv["onRuntimeInitialized"] = () => setStatus("ready");
+    } else {
+      setStatus("error");
+    }
+  }
 
   return status;
 }

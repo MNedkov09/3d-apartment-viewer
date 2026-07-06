@@ -492,7 +492,6 @@ function App() {
     setCvError("");
     // Clear any pending timeout from the previous loadCv() call
     if (loadCv._timeoutId) clearTimeout(loadCv._timeoutId);
-    cvReady = false;
     try {
       await loadCv();
     } catch (err) {

@@ -16,30 +16,6 @@ import {
 import { buildWallMeshes } from "./wallGeometry";
 
 /**
- * Floor plane sized to fit the detected plan, positioned at y=0 with
- * walls sitting on top of it (walls extrude from y=0 upward).
- */
-function Floor({ bounds }) {
-  const mesh = useRef(null);
-  const mat = useRef(null);
-
-  useEffect(() => {
-    if (!mesh.current) return;
-    mat.current = new StandardMaterial("floorMat", mesh.current.scene);
-    mat.current.diffuseColor = new Color3(0.86, 0.86, 0.86);
-    mat.current.specularColor = new Color3(0.1, 0.1, 0.1);
-    mesh.current.material = mat.current;
-    mesh.current.receiveShadows = true;
-
-    return () => {
-      if (mat.current) mat.current.dispose();
-    };
-  }, []);
-
-  return mesh;
-}
-
-/**
  * Full 3D viewer. Takes the `edges` graph produced by the skeleton-tracing
  * step and renders it as walls you can orbit/walk around.
  *
@@ -230,6 +206,11 @@ export default function Viewer3D({
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
     wallMeshesRef.current = wallMeshes;
 
+    // Capture our meshes locally so cleanup disposes the right ones
+    // (in StrictMode the ref gets overwritten by the next effect before
+    // the previous cleanup runs).
+    const ourMeshes = [...wallMeshes];
+
     // Apply PBR material to each wall
     const wallMat = new PBRMaterial("wallMat", scene);
     wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84); // #e8e2d5 warm wall color
@@ -248,8 +229,6 @@ export default function Viewer3D({
     const _forward = Vector3.Zero();
     const _right = Vector3.Zero();
     const _targetDelta = Vector3.Zero();
-    console.log("forward:", _forward.toString());
-    console.log("right:", _right.toString());
 
     // Prevent page scroll when canvas is focused
     const onWheel = (e) => {
@@ -304,7 +283,7 @@ export default function Viewer3D({
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
-      wallMeshes.forEach((m) => m.dispose());
+      ourMeshes.forEach((m) => m.dispose());
       floor.dispose();
       wallMat.dispose();
       floorMat.dispose();
