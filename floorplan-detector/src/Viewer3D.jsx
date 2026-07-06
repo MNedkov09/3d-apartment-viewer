@@ -288,8 +288,6 @@ export default function Viewer3D({
     pixelsPerMeter,
     wallHeightMeters,
     wallThicknessMeters,
-    bounds,
-    cameraDistance,
   ]);
 
   // Handle window resize

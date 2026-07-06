@@ -51,16 +51,25 @@ export function useOpenCv() {
   // Stable callback defined outside the effect so it doesn't need to be
   // listed in the dependency array — it doesn't close over any outer vars.
   function handleScriptLoad() {
-    // At this point the JS glue code has loaded, but the WASM runtime
-    // may still be compiling/instantiating. cv.onRuntimeInitialized is
-    // the actual "safe to use cv.* now" signal.
+    // script.onload fires when the JS glue code downloads, NOT when WASM
+    // finishes compiling.  We must always register onRuntimeInitialized —
+    // it is OpenCV.js's actual readiness signal.  If WASM is already ready
+    // (e.g. script was cached), the hook fires synchronously and we pick it
+    // up here; otherwise we set it up and wait for the async callback.
     if (window.cv && window.cv.Mat) {
+      // Already ready (cached script or previously loaded)
       setStatus("ready");
-    } else if (window.cv) {
-      window.cv["onRuntimeInitialized"] = () => setStatus("ready");
-    } else {
-      setStatus("error");
+      return;
     }
+    // Always register the hook — it fires synchronously if WASM is already
+    // initialized, or asynchronously once compilation finishes.
+    window.Module = window.Module || {};
+    const prev = window.Module.onRuntimeInitialized;
+    window.Module.onRuntimeInitialized = () => {
+      // Preserve any previously registered handler (e.g. from another load)
+      if (prev) prev();
+      setStatus("ready");
+    };
   }
 
   return status;

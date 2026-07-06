@@ -14,32 +14,41 @@ function loadCv() {
   if (cvReady) return Promise.resolve();
   if (cvPromise) return cvPromise; // dedupe: caller waits for the same load
   cvPromise = new Promise((resolve, reject) => {
-    window.Module = window.Module || {};
-    window.Module.onRuntimeInitialized = () => {
-      cvReady = true;
-      cvPromise = null; // allow future retries
-      console.log("OpenCV ready");
-      resolve();
+    let settled = false;
+    const settle = (fn) => (val) => {
+      if (settled) return;
+      settled = true;
+      fn(val);
     };
-    window.Module.onAbort = (err) => {
-      cvPromise = null;
-      console.error("OpenCV WASM abort:", err);
-      reject(new Error("OpenCV failed to initialize"));
-    };
-    const script = document.createElement("script");
-    script.src = "https://docs.opencv.org/4.8.0/opencv.js";
-    script.onerror = () => {
-      cvPromise = null;
-      reject(new Error("Failed to load OpenCV.js"));
-    };
-    document.head.appendChild(script);
     const timeoutId = setTimeout(() => {
-      if (!cvReady) {
+      if (!settled) {
         cvPromise = null;
         reject(new Error("OpenCV.js load timed out"));
       }
     }, 30000);
-    script._timeoutId = timeoutId;
+
+    window.Module = window.Module || {};
+    window.Module.onRuntimeInitialized = () => {
+      clearTimeout(timeoutId);
+      cvReady = true;
+      cvPromise = null; // allow future retries
+      console.log("OpenCV ready");
+      settle(resolve)();
+    };
+    window.Module.onAbort = (err) => {
+      clearTimeout(timeoutId);
+      cvPromise = null;
+      console.error("OpenCV WASM abort:", err);
+      settle(reject)(new Error("OpenCV failed to initialize"));
+    };
+    const script = document.createElement("script");
+    script.src = "https://docs.opencv.org/4.8.0/opencv.js";
+    script.onerror = () => {
+      clearTimeout(timeoutId);
+      cvPromise = null;
+      settle(reject)(new Error("Failed to load OpenCV.js"));
+    };
+    document.head.appendChild(script);
   });
   return cvPromise;
 }
@@ -425,29 +434,28 @@ function App() {
       const { edges, nodes } = extractWallGraph(canvas, image);
 
       // Draw each edge's simplified polyline — straight runs render as one
-      const ctx2 = canvas.getContext("2d");
       // clean segment, curved runs render as a smooth multi-point path.
-      ctx2.strokeStyle = "red";
-      ctx2.lineWidth = 2;
-      ctx2.lineJoin = "round";
-      ctx2.lineCap = "round";
+      ctx.strokeStyle = "red";
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
       for (const edge of edges) {
         if (edge.points.length < 2) continue;
-        ctx2.beginPath();
-        ctx2.moveTo(edge.points[0][0], edge.points[0][1]);
+        ctx.beginPath();
+        ctx.moveTo(edge.points[0][0], edge.points[0][1]);
         for (let i = 1; i < edge.points.length; i++) {
-          ctx2.lineTo(edge.points[i][0], edge.points[i][1]);
+          ctx.lineTo(edge.points[i][0], edge.points[i][1]);
         }
-        if (edge.closed) ctx2.closePath();
-        ctx2.stroke();
+        if (edge.closed) ctx.closePath();
+        ctx.stroke();
       }
 
       // Mark junctions/endpoints so you can visually verify the graph
-      ctx2.fillStyle = "#1565c0";
+      ctx.fillStyle = "#1565c0";
       for (const [nx, ny] of nodes) {
-        ctx2.beginPath();
-        ctx2.arc(nx, ny, 3, 0, Math.PI * 2);
-        ctx2.fill();
+        ctx.beginPath();
+        ctx.arc(nx, ny, 3, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       setEdges(edges);
