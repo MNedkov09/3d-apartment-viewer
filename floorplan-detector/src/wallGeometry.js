@@ -1,34 +1,8 @@
 import { Vector3, Mesh, MeshBuilder } from "@babylonjs/core";
 
 /**
- * Offset a polyline into a wall "footprint" ribbon: two parallel lines
- * (left/right of the centerline) at +/- half wall thickness, joined into
- * one closed polygon.
- *
- * Normal direction at each point is computed from the AVERAGE of the
- * incoming and outgoing segment directions. This is a simple, cheap
- * approximation of a proper miter join — not perfect at very sharp
- * corners, but it doesn't blow up in length the way a true line-line
- * intersection miter can at near-180-degree bends, which matters more
- * for an MVP than corner perfection.
- *
- * Works identically for straight edges (2 points) and curved edges
- * (many points) — same math either way.
- *
- * @param {Array<[number, number]>} points - polyline in plan-space units (already scaled)
- * @param {number} thickness - wall thickness in the same units as points
- * @param {boolean} closed - whether this polyline is a closed loop
- * @returns {Array<[number, number]>} footprint polygon (left side forward, right side reversed)
- */
-
-/**
  * Build one extruded wall mesh from a single traced edge.
  * Each segment of the edge becomes a box mesh.
- *
- * @param {{points: Array<[number,number]>, closed: boolean}} edge
- * @param {object} opts - { thickness, height, scale } all in consistent units
- * @param {BABYLON.Scene} scene
- * @returns {BABYLON.Mesh|null}
  */
 export function edgeToWallMesh(edge, opts, scene) {
   const { thickness, height, scale } = opts;

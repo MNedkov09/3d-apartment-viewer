@@ -424,12 +424,8 @@ function App() {
 
       const { edges, nodes } = extractWallGraph(canvas, image);
 
-      // Redraw the image (cv.imread may have cleared the canvas)
-      const ctx2 = canvas.getContext("2d");
-      ctx2.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx2.drawImage(image, ox, oy, w, h);
-
       // Draw each edge's simplified polyline — straight runs render as one
+      const ctx2 = canvas.getContext("2d");
       // clean segment, curved runs render as a smooth multi-point path.
       ctx2.strokeStyle = "red";
       ctx2.lineWidth = 2;

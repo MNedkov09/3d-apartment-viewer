@@ -35,7 +35,6 @@ export default function Viewer3D({
   const sceneRef = useRef(null);
   const wallMeshesRef = useRef([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [cursorLocked, setCursorLocked] = useState(false);
   const keysRef = useRef(new Set());
 
   const handleKeyDown = useCallback((e) => {
@@ -193,8 +192,6 @@ export default function Viewer3D({
     floor.material = floorMat;
 
     // ---- Walls ----
-    // Clear previous wall meshes
-    wallMeshesRef.current.forEach((m) => m.dispose());
     wallMeshesRef.current = [];
 
     const wallOpts = {
@@ -238,12 +235,6 @@ export default function Viewer3D({
     };
     document.addEventListener("wheel", onWheel, { passive: false });
 
-    // Update cursor lock state
-    const onPointerLockChange = () => {
-      setCursorLocked(document.pointerLockElement === canvasRef.current);
-    };
-    document.addEventListener("pointerlockchange", onPointerLockChange);
-
     // Prevent context menu from interfering with right-click orbit
     const onContextMenu = (e) => e.preventDefault();
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
@@ -276,10 +267,8 @@ export default function Viewer3D({
 
     // Cleanup on unmount
     return () => {
-      canvasRef.current?.removeEventListener("click", onCanvasClick);
       canvasRef.current?.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("wheel", onWheel);
-      document.removeEventListener("pointerlockchange", onPointerLockChange);
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
@@ -360,9 +349,8 @@ export default function Viewer3D({
           fontFamily: "sans-serif",
         }}
       >
-        {cursorLocked
-          ? "ESC to unlock · WASD to move · Right-click to orbit"
-          : "Click to lock cursor · WASD to move · Mouse to orbit"}
+        WASD to move · Left-click to orbit · Right-click to move camera · Scroll
+        to zoom
       </div>
     </div>
   );
