@@ -58,6 +58,7 @@ function loadCv() {
 const THRESH_BLOCK = 25; // adaptive threshold block size (odd)
 const THRESH_C = 8; // adaptive threshold constant
 const MIN_AREA = 500; // min area (px^2) to keep a component as wall
+const PAD = 20; // px — white padding around cropped content before thresholding
 
 /**
  * Build a binary mask of wall-stroke pixels (dropping text by stroke
@@ -83,9 +84,62 @@ function buildSkeleton(canvas, image) {
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
 
+  let rows, cols;
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+
+    // Find the bounding box of non-white content (the floor plan).
+    // White padding (255) creates a frame when inverted; we want to
+    // exclude it entirely by cropping to the content region first.
+    const mRows = gray.rows,
+      mCols = gray.cols;
+    let top = mRows, bottom = 0, left = mCols, right = 0;
+    const grayData = gray.data;
+    for (let y = 0; y < mRows; y++) {
+      for (let x = 0; x < mCols; x++) {
+        if (grayData[y * mCols + x] < 248) { // not near-white
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+          if (x < left) left = x;
+          if (x > right) right = x;
+        }
+      }
+    }
+
+    // Crop to content bounding box (with a generous margin to push the
+    // crop edge away from the skeleton, preventing boundary artifacts).
+    const margin = 30;
+    top = Math.max(0, top - margin);
+    bottom = Math.min(mRows - 1, bottom + margin);
+    left = Math.max(0, left - margin);
+    right = Math.min(mCols - 1, right + margin);
+
+    // Extract the content bounding box.
+    const cw = right - left + 1;
+    const ch = bottom - top + 1;
+    const cropped = cv.Mat.zeros(ch, cw, cv.CV_8UC1);
+    gray.roi = new cv.Rect(left, top, cw, ch);
+    gray.copyTo(cropped);
+    gray.roi = new cv.Rect(0, 0, mCols, mRows); // restore
+
+    // Pad the crop with white (255) on all sides so the crop edge never
+    // touches floor-plan content.  Without this, the adaptive threshold
+    // sees the crop boundary as a strong edge and skeletonization produces
+    // lines along the crop perimeter, which the graph tracer interprets as
+    // nodes at the corners.
+    const padded = cv.Mat.zeros(ch + 2 * PAD, cw + 2 * PAD, cv.CV_8UC1);
+    // Fill with white (255)
+    for (let y = 0; y < padded.rows; y++) {
+      for (let x = 0; x < padded.cols; x++) {
+        padded.data[y * padded.cols + x] = 255;
+      }
+    }
+    // Paste the cropped content into the center of the white padding
+    padded.roi = new cv.Rect(PAD, PAD, cw, ch);
+    cropped.copyTo(padded);
+    padded.roi = new cv.Rect(0, 0, padded.cols, padded.rows); // restore
+
+    cv.GaussianBlur(padded, blurred, new cv.Size(3, 3), 0);
 
     cv.adaptiveThreshold(
       blurred,
@@ -105,7 +159,7 @@ function buildSkeleton(canvas, image) {
       8,
       cv.CV_32S,
     );
-    const rows = mask.rows,
+    rows = mask.rows,
       cols = mask.cols;
     const labelData = labels.data32S;
 
@@ -119,6 +173,19 @@ function buildSkeleton(canvas, image) {
     }
 
     const skeleton = zhangSuenThinning(wallData, cols, rows);
+
+    // Strip a border from the skeleton matching the padding size.
+    // The padded image has PAD px of white around the content, so the
+    // skeleton won't reach the outer edge (all white).  Strip exactly
+    // PAD px to remove any skeleton pixels that touch the crop boundary.
+    const border = PAD;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (y < border || y >= rows - border || x < border || x >= cols - border) {
+          skeleton[y * cols + x] = 0;
+        }
+      }
+    }
 
     return { skeleton, cols, rows };
   } finally {
@@ -381,7 +448,23 @@ function extractWallGraph(canvas, image) {
   }
 
   const cornerNodes = [...cornerNodeSet].map((s) => s.split(",").map(Number));
-  return { edges: finalEdges, nodes: [...junctionNodes, ...cornerNodes] };
+  const allNodes = [...junctionNodes, ...cornerNodes];
+
+  // Filter out nodes within the padding zone (PAD=20px) plus a small margin
+  // from the crop boundary — these are artifacts from the crop edge /
+  // canvas padding, not real floor plan features.
+  const border = PAD + 5; // 25px from padded crop edge
+  const validNodeSet = new Set(
+    allNodes
+      .filter(([nx, ny]) => nx >= border && nx < cols - border && ny >= border && ny < rows - border)
+      .map(([nx, ny]) => `${nx},${ny}`),
+  );
+  const filteredEdges = finalEdges.filter((e) =>
+    e.points.every(([px, py]) => px >= border && px < cols - border && py >= border && py < rows - border),
+  );
+  const filteredNodes = allNodes.filter(([nx, ny]) => validNodeSet.has(`${nx},${ny}`));
+
+  return { edges: filteredEdges, nodes: filteredNodes };
 }
 
 /* ---------- React component ---------- */

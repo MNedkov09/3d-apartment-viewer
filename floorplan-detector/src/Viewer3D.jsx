@@ -171,11 +171,12 @@ export default function Viewer3D({
     shadowGen.blurKernel = 16;
 
     // ---- Floor ----
+    const halfThick = wallThicknessMeters / 2;
     const floor = MeshBuilder.CreateGround(
       "floor",
       {
-        width: bounds.w,
-        height: bounds.d,
+        width: bounds.w + halfThick * 2,
+        height: bounds.d + halfThick * 2,
         subdivisions: 2,
         onReady: (mesh) => {
           mesh.receiveShadows = true;
