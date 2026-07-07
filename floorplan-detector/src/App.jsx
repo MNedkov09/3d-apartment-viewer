@@ -93,11 +93,15 @@ function buildSkeleton(canvas, image) {
     // exclude it entirely by cropping to the content region first.
     const mRows = gray.rows,
       mCols = gray.cols;
-    let top = mRows, bottom = 0, left = mCols, right = 0;
+    let top = mRows,
+      bottom = 0,
+      left = mCols,
+      right = 0;
     const grayData = gray.data;
     for (let y = 0; y < mRows; y++) {
       for (let x = 0; x < mCols; x++) {
-        if (grayData[y * mCols + x] < 248) { // not near-white
+        if (grayData[y * mCols + x] < 248) {
+          // not near-white
           if (y < top) top = y;
           if (y > bottom) bottom = y;
           if (x < left) left = x;
@@ -159,8 +163,7 @@ function buildSkeleton(canvas, image) {
       8,
       cv.CV_32S,
     );
-    rows = mask.rows,
-      cols = mask.cols;
+    ((rows = mask.rows), (cols = mask.cols));
     const labelData = labels.data32S;
 
     const keep = new Uint8Array(numLabels);
@@ -181,7 +184,12 @@ function buildSkeleton(canvas, image) {
     const border = PAD;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        if (y < border || y >= rows - border || x < border || x >= cols - border) {
+        if (
+          y < border ||
+          y >= rows - border ||
+          x < border ||
+          x >= cols - border
+        ) {
           skeleton[y * cols + x] = 0;
         }
       }
@@ -456,13 +464,27 @@ function extractWallGraph(canvas, image) {
   const border = PAD + 5; // 25px from padded crop edge
   const validNodeSet = new Set(
     allNodes
-      .filter(([nx, ny]) => nx >= border && nx < cols - border && ny >= border && ny < rows - border)
+      .filter(
+        ([nx, ny]) =>
+          nx >= border &&
+          nx < cols - border &&
+          ny >= border &&
+          ny < rows - border,
+      )
       .map(([nx, ny]) => `${nx},${ny}`),
   );
   const filteredEdges = finalEdges.filter((e) =>
-    e.points.every(([px, py]) => px >= border && px < cols - border && py >= border && py < rows - border),
+    e.points.every(
+      ([px, py]) =>
+        px >= border &&
+        px < cols - border &&
+        py >= border &&
+        py < rows - border,
+    ),
   );
-  const filteredNodes = allNodes.filter(([nx, ny]) => validNodeSet.has(`${nx},${ny}`));
+  const filteredNodes = allNodes.filter(([nx, ny]) =>
+    validNodeSet.has(`${nx},${ny}`),
+  );
 
   return { edges: filteredEdges, nodes: filteredNodes };
 }
