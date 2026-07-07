@@ -70,12 +70,11 @@ export default function Viewer3D({
       }
     }
     const scale = 1 / pixelsPerMeter;
-    const padding = 1;
     return {
       cx: ((minX + maxX) / 2) * scale,
       cz: ((minY + maxY) / 2) * scale,
-      w: (maxX - minX) * scale + padding * 2,
-      d: (maxY - minY) * scale + padding * 2,
+      w: (maxX - minX) * scale,
+      d: (maxY - minY) * scale,
     };
   }, [edges, pixelsPerMeter]);
 
@@ -172,22 +171,24 @@ export default function Viewer3D({
     shadowGen.blurKernel = 16;
 
     // ---- Floor ----
-    const floor = MeshBuilder.CreatePlane(
+    const floor = MeshBuilder.CreateGround(
       "floor",
       {
         width: bounds.w,
         height: bounds.d,
-        sideOrientation: MeshBuilder.DOUBLESIDE,
+        subdivisions: 2,
+        onReady: (mesh) => {
+          mesh.receiveShadows = true;
+        },
       },
       scene,
     );
-    floor.position = new Vector3(bounds.cx, 0, bounds.cz);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadows = true;
+    floor.position = new Vector3(bounds.cx, -0.05, bounds.cz);
 
     const floorMat = new StandardMaterial("floorMat", scene);
-    floorMat.diffuseColor = new Color3(0.86, 0.86, 0.86);
-    floorMat.specularColor = new Color3(0.1, 0.1, 0.1);
+    floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
+    floorMat.specularColor = new Color3(0.2, 0.2, 0.2);
+    floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
     floor.material = floorMat;
 
     // ---- Walls ----
