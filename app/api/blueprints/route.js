@@ -17,7 +17,7 @@ const ALLOWED_EXT = new Set([
 
 // GET /api/blueprints  -> most recent blueprints for the logged-in user
 export async function GET() {
-  const user = getCurrentUser();
+  const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   }
@@ -32,12 +32,14 @@ export async function GET() {
     )
     .all(user.id);
 
-  return NextResponse.json({ blueprints: rows });
+  // Drop entries whose file was deleted from disk
+  const alive = rows.filter((r) => fs.existsSync(path.join(process.cwd(), "public", r.file_path)));
+  return NextResponse.json({ blueprints: alive });
 }
 
 // POST /api/blueprints  -> upload a local blueprint (multipart/form-data)
 export async function POST(request) {
-  const user = getCurrentUser();
+  const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "Log in to upload a blueprint." }, { status: 401 });
   }
@@ -94,4 +96,45 @@ export async function POST(request) {
     .get(info.lastInsertRowid);
 
   return NextResponse.json({ blueprint }, { status: 201 });
+}
+
+// DELETE /api/blueprints?id=...  ->  delete a single blueprint
+// DELETE /api/blueprints?clear=1  ->  delete all blueprints for this user
+export async function DELETE(request) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not logged in." }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(request.url);
+
+  // Clear all
+  if (searchParams.get("clear") === "1") {
+    const rows = db.prepare("SELECT file_path FROM blueprints WHERE user_id = ?").all(user.id);
+    for (const r of rows) {
+      const diskPath = path.join(process.cwd(), "public", r.file_path);
+      if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+    }
+    db.prepare("DELETE FROM blueprints WHERE user_id = ?").run(user.id);
+    return NextResponse.json({ ok: true });
+  }
+
+  const id = searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "Missing id." }, { status: 400 });
+  }
+
+  const bp = db
+    .prepare("SELECT * FROM blueprints WHERE id = ? AND user_id = ?")
+    .get(id, user.id);
+  if (!bp) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
+
+  // Remove file from disk
+  const diskPath = path.join(process.cwd(), "public", bp.file_path);
+  if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+
+  db.prepare("DELETE FROM blueprints WHERE id = ?").run(id);
+  return NextResponse.json({ ok: true });
 }

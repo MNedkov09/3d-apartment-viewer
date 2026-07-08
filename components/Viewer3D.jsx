@@ -18,11 +18,6 @@ import { buildWallMeshes } from "./wallGeometry";
 /**
  * Full 3D viewer. Takes the `edges` graph produced by the skeleton-tracing
  * step and renders it as walls you can orbit/walk around.
- *
- * @param {Array<{points: Array<[number,number]>, closed: boolean}>} edges
- * @param {number} pixelsPerMeter - calibration ratio from the 2D image (see scale-calibration step)
- * @param {number} wallHeightMeters
- * @param {number} wallThicknessMeters
  */
 export default function Viewer3D({
   edges,
@@ -52,7 +47,6 @@ export default function Viewer3D({
     };
   }, [handleKeyDown, handleKeyUp]);
 
-  // Compute plan bounds so Floor and camera share the same origin.
   const bounds = useMemo(() => {
     if (!edges || edges.length === 0) {
       return { cx: 0, cz: 0, w: 10, d: 10 };
@@ -78,8 +72,6 @@ export default function Viewer3D({
     };
   }, [edges, pixelsPerMeter]);
 
-  // Rough camera framing based on plan size, so the scene doesn't spawn
-  // absurdly zoomed in/out regardless of how large the uploaded image is.
   const cameraDistance = useMemo(() => {
     if (!edges || edges.length === 0) return 10;
     let maxExtent = 1;
@@ -96,18 +88,15 @@ export default function Viewer3D({
     return Math.max(maxExtent * 1.8, 10);
   }, [edges, pixelsPerMeter]);
 
-  // Create and dispose the Babylon scene
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
-    // Dispose previous scene if any
     if (sceneRef.current) {
       wallMeshesRef.current.forEach((m) => m.dispose());
       sceneRef.current.dispose();
       engineRef.current?.dispose();
     }
 
-    // Create engine and scene
     const engine = new Engine(canvasRef.current, true, {
       preserveDrawingBuffer: false,
       stencil: false,
@@ -116,21 +105,17 @@ export default function Viewer3D({
 
     const scene = new Scene(engine);
     sceneRef.current = scene;
-
-    // Clear background (sky blue)
     scene.clearColor = new Color4(0.53, 0.81, 0.92, 1);
 
-    // ---- Camera: WASD + mouse orbit ----
     const camera = new ArcRotateCamera(
       "camera",
-      -Math.PI / 4, // alpha (horizontal angle)
-      Math.PI / 3, // beta (vertical angle, 60 degrees down)
-      cameraDistance, // radius (distance from target)
-      new Vector3(0, wallHeightMeters / 2, 0), // target
+      -Math.PI / 4,
+      Math.PI / 3,
+      cameraDistance,
+      new Vector3(bounds.cx, wallHeightMeters / 2, bounds.cz),
       scene,
     );
     camera.attachControl(canvasRef.current, true);
-    // Clear built-in WASD bindings so our render loop handles movement
     camera.keysUp = [];
     camera.keysDown = [];
     camera.keysLeft = [];
@@ -142,9 +127,8 @@ export default function Viewer3D({
     camera.alphaRotationSpeed = 12;
     camera.betaRotationSpeed = 12;
 
-    const wasdSpeed = 8; // meters per second
+    const wasdSpeed = 8;
 
-    // ---- Lighting ----
     const hemiLight = new HemisphericLight(
       "hemiLight",
       new Vector3(0, 1, 0),
@@ -165,12 +149,10 @@ export default function Viewer3D({
     );
     dirLight.intensity = 1;
 
-    // ---- Shadows ----
     const shadowGen = new ShadowGenerator(1024, dirLight);
     shadowGen.useBlurExponentialShadowMap = true;
     shadowGen.blurKernel = 16;
 
-    // ---- Floor ----
     const halfThick = wallThicknessMeters / 2;
     const floor = MeshBuilder.CreateGround(
       "floor",
@@ -192,26 +174,18 @@ export default function Viewer3D({
     floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
     floor.material = floorMat;
 
-    // ---- Walls ----
     wallMeshesRef.current = [];
-
     const wallOpts = {
       thickness: wallThicknessMeters,
       height: wallHeightMeters,
       scale: 1 / pixelsPerMeter,
     };
-
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
     wallMeshesRef.current = wallMeshes;
-
-    // Capture our meshes locally so cleanup disposes the right ones
-    // (in StrictMode the ref gets overwritten by the next effect before
-    // the previous cleanup runs).
     const ourMeshes = [...wallMeshes];
 
-    // Apply PBR material to each wall
     const wallMat = new PBRMaterial("wallMat", scene);
-    wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84); // #e8e2d5 warm wall color
+    wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
     wallMat.metallic = 0.0;
     wallMat.roughness = 0.8;
     wallMeshes.forEach((mesh) => {
@@ -220,27 +194,21 @@ export default function Viewer3D({
       mesh.receiveShadow = true;
     });
 
-    // ---- Render loop ----
-
-    // WASD movement helper
     const _forward = Vector3.Zero();
     const _right = Vector3.Zero();
     const _targetDelta = Vector3.Zero();
 
-    // Prevent page scroll when canvas is focused
     const onWheel = (e) => {
       if (document.activeElement === canvasRef.current) {
         e.preventDefault();
       }
     };
-    document.addEventListener("wheel", onWheel, { passive: false });
+    canvasRef.current?.ownerDocument?.addEventListener("wheel", onWheel, { passive: false });
 
-    // Prevent context menu from interfering with right-click orbit
     const onContextMenu = (e) => e.preventDefault();
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
 
     engine.runRenderLoop(() => {
-      // WASD: move camera target (camera follows at fixed radius)
       const keys = keysRef.current;
       const target = camera.target;
       _forward.copyFrom(camera.getDirection(Vector3.Forward()));
@@ -265,10 +233,9 @@ export default function Viewer3D({
       scene.render();
     });
 
-    // Cleanup on unmount
     return () => {
       canvasRef.current?.removeEventListener("contextmenu", onContextMenu);
-      document.removeEventListener("wheel", onWheel);
+      canvasRef.current?.ownerDocument?.removeEventListener("wheel", onWheel);
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
@@ -290,7 +257,6 @@ export default function Viewer3D({
     wallThicknessMeters,
   ]);
 
-  // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       if (engineRef.current) {

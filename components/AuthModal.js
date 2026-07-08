@@ -11,7 +11,12 @@ export default function AuthModal({ mode = "login", onClose, onSuccess }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -137,14 +142,14 @@ export default function AuthModal({ mode = "login", onClose, onSuccess }) {
           {tab === "register" ? (
             <>
               Already registered?{" "}
-              <button onClick={() => setTab("login")} style={linkBtn}>
+              <button onClick={() => setTab("login")} style={linkBtnStyle}>
                 Log in
               </button>
             </>
           ) : (
             <>
               No account yet?{" "}
-              <button onClick={() => setTab("register")} style={linkBtn}>
+              <button onClick={() => setTab("register")} style={linkBtnStyle}>
                 Register
               </button>
             </>
@@ -155,7 +160,7 @@ export default function AuthModal({ mode = "login", onClose, onSuccess }) {
   );
 }
 
-const linkBtn = {
+const linkBtnStyle = {
   border: "none",
   background: "none",
   cursor: "pointer",

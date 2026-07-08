@@ -9,6 +9,7 @@ export default function UploadPage() {
   const [recent, setRecent] = useState([]);
   const [active, setActive] = useState(null);
   const [loadingRecent, setLoadingRecent] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
@@ -51,6 +52,32 @@ export default function UploadPage() {
     window.addEventListener("auth-changed", onAuthChange);
     return () => window.removeEventListener("auth-changed", onAuthChange);
   }, [checkAuth, loadRecent]);
+
+  async function deleteOne(bp) {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/blueprints?id=${bp.id}`, { method: "DELETE" });
+      if (res.ok) {
+        setRecent((r) => r.filter((x) => x.id !== bp.id));
+        if (active?.id === bp.id) setActive(null);
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function clearAll() {
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/blueprints?clear=1", { method: "DELETE" });
+      if (res.ok) {
+        setRecent([]);
+        setActive(null);
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   function pickFile(f) {
     if (!f) return;
@@ -146,7 +173,7 @@ export default function UploadPage() {
         className="workspace-grid"
       >
         {/* Left: recent */}
-        <RecentPanel items={recent} activeId={active?.id} onSelect={setActive} loading={loadingRecent} />
+        <RecentPanel items={recent} activeId={active?.id} onSelect={setActive} loading={loadingRecent} onClear={clearAll} onDelete={deleteOne} />
 
         {/* Right: uploader + viewer */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>

@@ -1,9 +1,13 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import FloorplanViewer from "@/components/FloorplanViewer";
+
 const IMAGE_EXT = ["png", "jpg", "jpeg", "webp", "gif", "svg"];
 const MODEL_EXT = ["glb", "gltf", "obj"];
 
-function extOf(p = "") {
+function extOf(p) {
+  if (!p) return "";
   return p.split(".").pop().toLowerCase();
 }
 
@@ -19,6 +23,17 @@ export default function Viewer({ blueprint }) {
   const isImage = IMAGE_EXT.includes(ext);
   const isPdf = ext === "pdf";
   const isModel = MODEL_EXT.includes(ext);
+  const [fileError, setFileError] = useState(null);
+
+  useEffect(() => {
+    setFileError(null);
+    if (!blueprint?.file_path) return;
+    fetch(blueprint.file_path, { method: "HEAD" })
+      .then((res) => {
+        if (!res.ok) setFileError("File no longer available on server.");
+      })
+      .catch(() => setFileError("File no longer available on server."));
+  }, [blueprint?.file_path]);
 
   return (
     <div
@@ -65,7 +80,16 @@ export default function Viewer({ blueprint }) {
           backgroundSize: "20px 20px",
         }}
       >
-        {!blueprint && (
+        {fileError && (
+          <div style={{ textAlign: "center", color: "var(--ink-faint)" }}>
+            <div style={{ fontSize: 40, lineHeight: 1 }}>⚠</div>
+            <p style={{ fontFamily: "var(--font-mono)", fontSize: 12, marginTop: 10 }}>
+              {fileError}
+            </p>
+          </div>
+        )}
+
+        {!blueprint && !fileError && (
           <div style={{ textAlign: "center", color: "var(--ink-faint)" }}>
             <div style={{ fontSize: 40, lineHeight: 1 }}>⌗</div>
             <p style={{ fontFamily: "var(--font-mono)", fontSize: 12, marginTop: 10 }}>
@@ -74,20 +98,13 @@ export default function Viewer({ blueprint }) {
           </div>
         )}
 
-        {isImage && (
-          <img
-            src={blueprint.file_path}
-            alt={blueprint.title}
-            style={{
-              maxWidth: "100%",
-              maxHeight: 520,
-              objectFit: "contain",
-              boxShadow: "0 1px 0 var(--line)",
-            }}
-          />
+        {isImage && !fileError && (
+          <div style={{ width: "100%", flex: 1, display: "flex", flexDirection: "column", padding: 12 }}>
+            <FloorplanViewer imageSrc={blueprint.file_path} blueprintTitle={blueprint.title} />
+          </div>
         )}
 
-        {isPdf && (
+        {isPdf && !fileError && (
           <iframe
             src={blueprint.file_path}
             title={blueprint.title}

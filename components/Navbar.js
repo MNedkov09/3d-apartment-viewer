@@ -15,6 +15,7 @@ export default function Navbar() {
   const pathname = usePathname();
   const [user, setUser] = useState(null);
   const [modal, setModal] = useState(null); // 'login' | 'register' | null
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const loadUser = useCallback(async () => {
     try {
@@ -89,7 +90,30 @@ export default function Navbar() {
             </span>
           </Link>
 
-          <nav style={{ display: "flex", gap: 6, alignItems: "center" }} className="nav-links">
+          <button
+            aria-label="Toggle menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+            style={{
+              display: "none",
+              background: "none",
+              border: "1px solid var(--line-strong)",
+              borderRadius: "var(--radius)",
+              padding: "6px 10px",
+              cursor: "pointer",
+              fontSize: 18,
+              lineHeight: 1,
+              color: "var(--ink)",
+            }}
+            className="mobile-menu-btn"
+          >
+            {menuOpen ? "✕" : "☰"}
+          </button>
+
+          <nav
+            style={{ display: "flex", gap: 6, alignItems: "center" }}
+            className="nav-links"
+          >
             {LINKS.map((l) => {
               const active = pathname === l.href;
               return (
@@ -155,8 +179,21 @@ export default function Navbar() {
       )}
 
       <style>{`
+        .mobile-menu-btn { display: none; }
         @media (max-width: 720px) {
-          .nav-links { display: none !important; }
+          .nav-links {
+            display: ${menuOpen ? "flex" : "none"} !important;
+            position: absolute;
+            top: 64px;
+            left: 0;
+            right: 0;
+            flex-direction: column;
+            background: var(--paper-raised);
+            border-bottom: 1px solid var(--line);
+            padding: 12px 24px;
+            gap: 4px;
+          }
+          .mobile-menu-btn { display: inline-block !important; }
         }
       `}</style>
     </>

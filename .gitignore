@@ -1,13 +1,10 @@
 # Dependencies
 node_modules/
-floorplan-detector/node_modules/
 
 # Build outputs
 dist/
-floorplan-detector/dist/
 
-# Package lock files
-package-lock.json
+# Package lock files (unlocked for this project — regenerate with `npm install` if needed)
 
 # Environment variables
 .env
@@ -41,4 +38,6 @@ Thumbs.db
 
 # Next.js frontend
 .next/
-data/
+
+# Uploaded blueprint files
+public/uploads/

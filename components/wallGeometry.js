@@ -1,4 +1,4 @@
-import { Vector3, Mesh, MeshBuilder } from "@babylonjs/core";
+import { Vector3, MeshBuilder } from "@babylonjs/core";
 
 /**
  * Build one extruded wall mesh from a single traced edge.
@@ -42,11 +42,6 @@ export function edgeToWallMesh(edge, opts, scene) {
 /**
  * Build wall meshes for an entire wall graph (all edges from the
  * skeleton-tracing step).
- *
- * @param {Array<{points: Array<[number,number]>, closed: boolean}>} edges
- * @param {object} opts - { thickness, height, scale }
- * @param {BABYLON.Scene} scene
- * @returns {BABYLON.Mesh[]}
  */
 export function buildWallMeshes(edges, opts, scene) {
   const allMeshes = [];

@@ -63,7 +63,7 @@ export default function Footer() {
           textTransform: "uppercase",
         }}
       >
-        <span>© {new Date().getFullYear()} QuackStack Ltd.</span>
+        <span>© 2026 QuackStack Ltd.</span>
         <span>Sofia · Bulgaria</span>
       </div>
     </footer>

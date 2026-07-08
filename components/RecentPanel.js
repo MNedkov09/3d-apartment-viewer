@@ -12,7 +12,7 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export default function RecentPanel({ items, activeId, onSelect, loading }) {
+export default function RecentPanel({ items, activeId, onSelect, loading, onClear, onDelete }) {
   return (
     <aside
       className="card"
@@ -30,9 +30,30 @@ export default function RecentPanel({ items, activeId, onSelect, loading }) {
         <span className="eyebrow" style={{ margin: 0 }}>
           Recent
         </span>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-faint)" }}>
-          {items?.length || 0}
-        </span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-faint)" }}>
+            {items?.length || 0}
+          </span>
+          {items?.length > 0 && (
+            <button
+              onClick={onClear}
+              title="Clear all"
+              style={{
+                fontSize: 11,
+                color: "var(--ink-faint)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                lineHeight: 1,
+              }}
+              onMouseEnter={(e) => (e.target.style.color = "var(--ink)")}
+              onMouseLeave={(e) => (e.target.style.color = "var(--ink-faint)")}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{ maxHeight: 480, overflowY: "auto" }}>
@@ -52,43 +73,75 @@ export default function RecentPanel({ items, activeId, onSelect, loading }) {
           items?.map((b) => {
             const active = b.id === activeId;
             return (
-              <button
+              <div
                 key={b.id}
-                onClick={() => onSelect(b)}
                 style={{
-                  width: "100%",
-                  textAlign: "left",
-                  border: "none",
                   borderBottom: "1px solid var(--line)",
                   borderLeft: `3px solid ${active ? "var(--accent)" : "transparent"}`,
                   background: active ? "var(--accent-wash)" : "transparent",
-                  padding: "12px 16px",
-                  cursor: "pointer",
-                  display: "block",
+                  display: "flex",
+                  alignItems: "center",
                 }}
               >
-                <div
+                <button
+                  onClick={() => onSelect(b)}
                   style={{
-                    fontSize: 14,
-                    fontWeight: 500,
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
+                    flex: 1,
+                    width: "100%",
+                    textAlign: "left",
+                    border: "none",
+                    background: "transparent",
+                    padding: "12px 16px",
+                    cursor: "pointer",
+                    display: "block",
                   }}
                 >
-                  {b.title}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--ink-faint)",
-                    marginTop: 3,
-                  }}
-                >
-                  {timeAgo(b.created_at)}
-                </div>
-              </button>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {b.title}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      color: "var(--ink-faint)",
+                      marginTop: 3,
+                    }}
+                  >
+                    {timeAgo(b.created_at)}
+                  </div>
+                </button>
+                {onDelete && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(b);
+                    }}
+                    title="Delete"
+                    style={{
+                      fontSize: 13,
+                      color: "var(--ink-faint)",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: "4px 8px",
+                      marginRight: 4,
+                      lineHeight: 1,
+                    }}
+                    onMouseEnter={(e) => (e.target.style.color = "var(--ink)")}
+                    onMouseLeave={(e) => (e.target.style.color = "var(--ink-faint)")}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             );
           })}
       </div>
