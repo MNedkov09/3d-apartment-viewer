@@ -38,3 +38,7 @@ vite-debug.log*
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Next.js frontend
+.next/
+data/
