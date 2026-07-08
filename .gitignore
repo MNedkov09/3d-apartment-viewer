@@ -41,3 +41,8 @@ Thumbs.db
 
 # Uploaded blueprint files
 public/uploads/
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
