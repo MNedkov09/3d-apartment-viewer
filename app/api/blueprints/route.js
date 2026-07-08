@@ -79,6 +79,52 @@ export async function POST(request) {
   const publicPath = `/uploads/${safeName}`;
 
   const buffer = Buffer.from(await file.arrayBuffer());
+
+  // Validate actual file content, not just the filename extension.
+  // This prevents a malicious file renamed to an allowed extension from being stored.
+  if (ext === ".svg") {
+    const text = buffer.toString("latin1");
+    if (!/^<svg[\s>]/i.test(text)) {
+      return NextResponse.json({ error: "Invalid SVG file." }, { status: 415 });
+    }
+  }
+  if (ext === ".pdf") {
+    if (buffer.toString("latin1", 0, 4) !== "%PDF") {
+      return NextResponse.json({ error: "Invalid PDF file." }, { status: 415 });
+    }
+  }
+  if (ext === ".glb") {
+    if (buffer.toString("latin1", 0, 4) !== "glTF") {
+      return NextResponse.json({ error: "Invalid GLB file." }, { status: 415 });
+    }
+  }
+  if (ext === ".gltf") {
+    const text = buffer.toString("latin1");
+    if (!/^\s*\{/.test(text)) {
+      return NextResponse.json({ error: "Invalid GLTF file." }, { status: 415 });
+    }
+  }
+  if (ext === ".png") {
+    if (buffer[0] !== 0x89 || buffer[1] !== 0x50 || buffer[2] !== 0x4e || buffer[3] !== 0x47) {
+      return NextResponse.json({ error: "Invalid PNG file." }, { status: 415 });
+    }
+  }
+  if (ext === ".jpg" || ext === ".jpeg") {
+    if (buffer[0] !== 0xff || buffer[1] !== 0xd8) {
+      return NextResponse.json({ error: "Invalid JPEG file." }, { status: 415 });
+    }
+  }
+  if (ext === ".webp") {
+    if (buffer[0] !== 0x52 || buffer[1] !== 0x49 || buffer[2] !== 0x46 || buffer[3] !== 0x46) {
+      return NextResponse.json({ error: "Invalid WebP file." }, { status: 415 });
+    }
+  }
+  if (ext === ".gif") {
+    if (buffer.toString("latin1", 0, 3) !== "GIF") {
+      return NextResponse.json({ error: "Invalid GIF file." }, { status: 415 });
+    }
+  }
+
   fs.writeFileSync(diskPath, buffer);
 
   const info = db

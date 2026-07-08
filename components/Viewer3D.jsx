@@ -253,6 +253,8 @@ export default function Viewer3D({
   }, [
     edges,
     pixelsPerMeter,
+    cameraDistance,
+    bounds,
     wallHeightMeters,
     wallThicknessMeters,
   ]);
