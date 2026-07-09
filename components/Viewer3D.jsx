@@ -13,7 +13,9 @@ import {
   ArcRotateCamera,
   ShadowGenerator,
   SceneLoader,
+  Matrix,
 } from "@babylonjs/core";
+import { Plane } from "@babylonjs/core";
 import { GLTFFileLoader } from "@babylonjs/loaders";
 import { buildWallMeshes } from "./wallGeometry";
 
@@ -25,17 +27,17 @@ const MODELS = [
   {
     url: "/models/placeholder.glb",
     position: [0, 0, 0],
-    scaling: [0.02, 0.02, 0.02],
+    scaling: [1, 1, 1],
   },
   {
     url: "/models/placeholder_copy.glb",
     position: [2, 0, 2],
-    scaling: [0.02, 0.02, 0.02],
+    scaling: [1, 1, 1],
   },
   {
     url: "/models/placeholder_copy_2.glb",
     position: [-2, 0, -2],
-    scaling: [0.02, 0.02, 0.02],
+    scaling: [1, 1, 1],
   },
 ];
 
@@ -169,6 +171,11 @@ export default function Viewer3D({
   const keysRef = useRef(new Set());
   const draggedMeshRef = useRef(null);
   const dragOffsetRef = useRef(new Vector3());
+  const dragStartPosRef = useRef(new Vector3());
+  // Unified drag state — used by BOTH the sidebar click (onModelClick) and
+  // the in-scene pointer drag (onPointerDown/Move/Up), so a drag started
+  // from either entry point behaves identically and cleans up correctly.
+  const isDraggingRef = useRef(false);
   const meshToModelRef = useRef(new Map());
   const floorYRef = useRef(-0.05);
   const cameraRef = useRef(null);
@@ -182,16 +189,38 @@ export default function Viewer3D({
     if (!modelEntry.mesh) return;
     const mesh = modelEntry.mesh;
     const cam = cameraRef.current;
-    if (!cam) return;
-    const FLOOR_Y = floorYRef.current;
-    const groundRay = cam.getPickRay(FLOOR_Y);
-    const hitPoint = groundRay.ray.getPoint(0);
-    draggedMeshRef.current = mesh;
-    dragOffsetRef.current.set(
-      mesh.position.x - hitPoint.x,
-      mesh.position.y - hitPoint.y,
-      mesh.position.z - hitPoint.z,
+    const scene = sceneRef.current;
+    if (!cam || !scene) return;
+    const flrY = floorYRef.current;
+
+    // Disable camera so it doesn't fight the drag.
+    cam.isActive = false;
+
+    // Compute camera→ground intersection (canvas center, since there's no
+    // actual pointer event from the sidebar click).
+    const ray = scene.createPickingRay(
+      canvasRef.current.clientWidth / 2,
+      canvasRef.current.clientHeight / 2,
+      Matrix.Identity(),
+      cam,
     );
+    const dir = ray?.direction;
+    let hitPoint = cam.position.clone();
+    if (dir && Math.abs(dir.y) > 1e-6) {
+      const t = (flrY - cam.position.y) / dir.y;
+      if (t >= 0) {
+        hitPoint = new Vector3(
+          cam.position.x + dir.x * t,
+          flrY,
+          cam.position.z + dir.z * t,
+        );
+      }
+    }
+
+    draggedMeshRef.current = mesh;
+    dragOffsetRef.current.copyFrom(hitPoint);
+    dragStartPosRef.current.copyFrom(mesh.position);
+    isDraggingRef.current = true;
     setDraggedModel(modelEntry);
   }, []);
 
@@ -338,6 +367,7 @@ export default function Viewer3D({
     );
     const floorY = -0.05;
     floor.position = new Vector3(bounds.cx, floorY, bounds.cz);
+    floorYRef.current = floorY;
 
     const floorMat = new StandardMaterial("floorMat", scene);
     floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
@@ -366,18 +396,32 @@ export default function Viewer3D({
     let loadedCount = 0;
 
     for (const { url, position, scaling, name } of modelEntries) {
+      // Snapshot current scene mesh count so the async callback can
+      // distinguish newly loaded meshes from previously loaded ones.
+      const prevMeshCount = scene.meshes.length;
       SceneLoader.Append(
         "",
         url,
         scene,
-        (_scene, _rootUrl, loadedMeshes) => {
+        (_scene) => {
           if (disposed) return; // scene was disposed before callback fired
           try {
-            if (!loadedMeshes || loadedMeshes.length === 0) {
-              console.warn(`GLTF loaded but produced no meshes: ${url}`);
+            // Use scene.getMeshes() instead of the loadedMeshes callback
+            // parameter — when the GLTF root node has no direct meshes
+            // (only nested children do), loadedMeshes is empty but the
+            // scene graph is fully populated.
+            const allMeshes = scene.meshes;
+            const newMeshes = allMeshes.slice(prevMeshCount);
+            const modelMeshesInRange = newMeshes.filter(
+              (m) => m !== floor && !wallMeshesRef.current.includes(m),
+            );
+            if (modelMeshesInRange.length === 0) {
+              console.warn(
+                `GLTF loaded but produced no visible geometry: ${url}`,
+              );
               return;
             }
-            loadedMeshes.forEach((m) => {
+            modelMeshesInRange.forEach((m) => {
               if (!m || !m.material) {
                 const mat = new PBRMaterial(
                   `${m?.name || "unknown"}_mat`,
@@ -452,12 +496,38 @@ export default function Viewer3D({
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
 
     // ---- Drag-and-drop for model meshes ----
-    const FLOOR_Y = floorYRef.current;
+    // Both entry points (sidebar click via onModelClick, and direct scene
+    // click via onPointerDown below) share isDraggingRef / draggedMeshRef /
+    // dragOffsetRef, so a drag started either way is tracked identically
+    // and always gets cleaned up by onPointerUp.
+
+    // Intersect a camera ray (from canvas pixel) with the ground plane Y=flrY.
+    // Returns the 3D point on the ground, or null if the ray is parallel/away.
+
+    function rayGroundIntersect(cam, flrY, ptrX, ptrY) {
+      const ray = scene.createPickingRay(
+        ptrX ?? canvasRef.current.clientWidth / 2,
+        ptrY ?? canvasRef.current.clientHeight / 2,
+        Matrix.Identity(),
+        cam,
+      );
+      const plane = Plane.FromPositionAndNormal(
+        new Vector3(0, flrY, 0),
+        new Vector3(0, 1, 0),
+      );
+      const distance = ray.intersectsPlane(plane);
+      if (distance === null || distance < 0) return null;
+      return ray.origin.add(ray.direction.scale(distance));
+    }
 
     const onPointerDown = (e) => {
       if (e.button !== 0) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const ptrX = e.clientX - rect.left;
+      const ptrY = e.clientY - rect.top;
+
       // Pick the mesh under the cursor.
-      const hit = scene.pick(e.clientX, e.clientY, (mesh) =>
+      const hit = scene.pick(ptrX, ptrY, (mesh) =>
         meshToModelRef.current.has(mesh),
       );
       if (!hit.hit) return;
@@ -466,50 +536,80 @@ export default function Viewer3D({
       const modelEntry = meshToModelRef.current.get(picked);
       if (!modelEntry) return;
 
-      // Compute the offset between the picked point and the model's position.
-      const groundRay = camera.getPickRay(FLOOR_Y);
-      const hitPoint = groundRay.ray.getPoint(0);
-      draggedMeshRef.current = picked;
-      dragOffsetRef.current.set(
-        picked.position.x - hitPoint.x,
-        picked.position.y - hitPoint.y,
-        picked.position.z - hitPoint.z,
+      // Disable camera orbit/WASD so the drag doesn't fight the camera.
+      camera.isActive = false;
+
+      // Cast ray from camera through cursor onto ground plane to get initial hit.
+      const hitPoint = rayGroundIntersect(
+        camera,
+        floorYRef.current,
+        ptrX,
+        ptrY,
       );
+      if (!hitPoint) {
+        camera.isActive = true;
+        return;
+      }
+
+      isDraggingRef.current = true;
+      draggedMeshRef.current = picked;
+      dragOffsetRef.current.copyFrom(hitPoint); // now stores the START hit point
+      dragStartPosRef.current.copyFrom(picked.position); // and the START mesh position
       setDraggedModel(modelEntry);
       canvasRef.current.style.cursor = "grabbing";
     };
 
-    const onPointerMove = () => {
+    const onPointerMove = (e) => {
+      if (!isDraggingRef.current) return;
       const mesh = draggedMeshRef.current;
       if (!mesh) return;
-      const ray = camera.getPickRay(FLOOR_Y);
-      const hitPoint = ray.ray.getPoint(0);
-      const offset = dragOffsetRef.current;
-      mesh.position.set(
-        hitPoint.x + offset.x,
-        hitPoint.y + offset.y,
-        hitPoint.z + offset.z,
+
+      const rect = canvasRef.current.getBoundingClientRect();
+      const ptrX = e.clientX - rect.left;
+      const ptrY = e.clientY - rect.top;
+
+      const hitPoint = rayGroundIntersect(
+        camera,
+        floorYRef.current,
+        ptrX,
+        ptrY,
       );
-      // Update the model entry's position so the panel reflects the live position.
+      if (!hitPoint) return;
+
+      // Snap Y to floor level.
+      const floorY = floorYRef.current;
+      const deltaX = hitPoint.x - dragOffsetRef.current.x;
+      const deltaZ = hitPoint.z - dragOffsetRef.current.z;
+
+      mesh.position.set(
+        dragStartPosRef.current.x - deltaX,
+        floorY,
+        dragStartPosRef.current.z - deltaZ,
+      );
+
+      // Update the model entry's position via ref (no React state update).
       const entry = meshToModelRef.current.get(mesh);
       if (entry) {
         entry.position[0] = mesh.position.x - bounds.cx;
-        entry.position[1] = mesh.position.y;
+        entry.position[1] = 0; // snapped to floor
         entry.position[2] = mesh.position.z - bounds.cz;
-        setLoadedModels(
-          [...meshToModelRef.current.entries()].map(([m, e]) => ({
-            ...e,
-            mesh: m,
-          })),
-        );
-        if (draggedModel && draggedModel.mesh === mesh) {
-          setDraggedModel({ ...draggedModel, position: [...entry.position] });
-        }
       }
     };
 
     const onPointerUp = () => {
-      if (draggedMeshRef.current) {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      camera.isActive = true;
+
+      const mesh = draggedMeshRef.current;
+      if (mesh) {
+        // Sync final position into the model entry.
+        const entry = meshToModelRef.current.get(mesh);
+        if (entry) {
+          entry.position[0] = mesh.position.x - bounds.cx;
+          entry.position[1] = 0;
+          entry.position[2] = mesh.position.z - bounds.cz;
+        }
         draggedMeshRef.current = null;
         setDraggedModel(null);
         canvasRef.current.style.cursor = "crosshair";
