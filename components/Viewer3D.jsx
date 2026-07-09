@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, useCallback } from "react";
+import { useEffect, useRef, useMemo, useCallback, useState } from "react";
 import {
   Engine,
   Scene,
@@ -12,8 +12,145 @@ import {
   MeshBuilder,
   ArcRotateCamera,
   ShadowGenerator,
+  SceneLoader,
 } from "@babylonjs/core";
+import { GLTFFileLoader } from "@babylonjs/loaders";
 import { buildWallMeshes } from "./wallGeometry";
+
+// Register the GLTF loader once at module load time (global Babylon.js singleton).
+SceneLoader.RegisterPlugin(new GLTFFileLoader());
+
+/** Hardcoded list of .glb models to load, each at a different fixed position. */
+const MODELS = [
+  {
+    url: "/models/placeholder.glb",
+    position: [0, 0, 0],
+    scaling: [0.02, 0.02, 0.02],
+  },
+  {
+    url: "/models/placeholder_copy.glb",
+    position: [2, 0, 2],
+    scaling: [0.02, 0.02, 0.02],
+  },
+  {
+    url: "/models/placeholder_copy_2.glb",
+    position: [-2, 0, -2],
+    scaling: [0.02, 0.02, 0.02],
+  },
+];
+
+/**
+ * Sidebar panel listing loaded models. Click a model to start dragging it
+ * in the 3D scene; its current position updates live while dragging.
+ */
+function ModelPanel({ models, draggedModel, onModelClick }) {
+  return (
+    <div
+      style={{
+        width: 200,
+        background: "rgba(0,0,0,0.6)",
+        color: "#fff",
+        padding: "10px 12px",
+        overflowY: "auto",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        fontSize: 12,
+        fontFamily: "var(--font-mono, monospace)",
+      }}
+    >
+      <div
+        style={{
+          fontWeight: 600,
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "rgba(255,255,255,0.5)",
+          marginBottom: 2,
+        }}
+      >
+        Models
+      </div>
+      {models.length === 0 && (
+        <div style={{ color: "rgba(255,255,255,0.4)", fontStyle: "italic" }}>
+          Loading…
+        </div>
+      )}
+      {models.map((m, i) => {
+        const isDragging = draggedModel && draggedModel.mesh === m.mesh;
+        return (
+          <div
+            key={i}
+            onClick={() => onModelClick(m)}
+            style={{
+              padding: "6px 8px",
+              borderRadius: 4,
+              cursor: "pointer",
+              background: isDragging
+                ? "rgba(255,255,255,0.15)"
+                : "rgba(255,255,255,0.05)",
+              border: isDragging
+                ? "1px solid rgba(255,255,255,0.3)"
+                : "1px solid transparent",
+              transition: "background 0.1s",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+            onMouseEnter={(e) => {
+              if (!isDragging)
+                e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+            }}
+            onMouseLeave={(e) => {
+              if (!isDragging)
+                e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+            }}
+          >
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {m.name}
+            </span>
+            {isDragging && (
+              <span
+                style={{
+                  fontSize: 9,
+                  background: "rgba(255,255,255,0.2)",
+                  padding: "1px 5px",
+                  borderRadius: 3,
+                  flexShrink: 0,
+                  marginLeft: 6,
+                }}
+              >
+                Drag
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {models.length > 0 && (
+        <div
+          style={{
+            marginTop: "auto",
+            paddingTop: 8,
+            borderTop: "1px solid rgba(255,255,255,0.1)",
+            color: "rgba(255,255,255,0.35)",
+            fontSize: 10,
+            lineHeight: 1.5,
+          }}
+        >
+          Click a model or drag it
+          <br />
+          directly in the scene.
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Full 3D viewer. Takes the `edges` graph produced by the skeleton-tracing
@@ -30,6 +167,33 @@ export default function Viewer3D({
   const sceneRef = useRef(null);
   const wallMeshesRef = useRef([]);
   const keysRef = useRef(new Set());
+  const draggedMeshRef = useRef(null);
+  const dragOffsetRef = useRef(new Vector3());
+  const meshToModelRef = useRef(new Map());
+  const floorYRef = useRef(-0.05);
+  const cameraRef = useRef(null);
+
+  // Track loaded models for the sidebar panel.
+  const [loadedModels, setLoadedModels] = useState([]);
+  const [draggedModel, setDraggedModel] = useState(null);
+
+  // Click a model in the panel to start dragging it in the scene.
+  const onModelClick = useCallback((modelEntry) => {
+    if (!modelEntry.mesh) return;
+    const mesh = modelEntry.mesh;
+    const cam = cameraRef.current;
+    if (!cam) return;
+    const FLOOR_Y = floorYRef.current;
+    const groundRay = cam.getPickRay(FLOOR_Y);
+    const hitPoint = groundRay.ray.getPoint(0);
+    draggedMeshRef.current = mesh;
+    dragOffsetRef.current.set(
+      mesh.position.x - hitPoint.x,
+      mesh.position.y - hitPoint.y,
+      mesh.position.z - hitPoint.z,
+    );
+    setDraggedModel(modelEntry);
+  }, []);
 
   const handleKeyDown = useCallback((e) => {
     keysRef.current.add(e.key.toLowerCase());
@@ -91,11 +255,16 @@ export default function Viewer3D({
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
+    // Guard against stale async callbacks (SceneLoader.Append) from previous
+    // effect runs.  When edges/bounds change the effect re-runs, disposes the
+    // old scene, and the pending GLTF callback would otherwise operate on a
+    // disposed scene → "Error in onSuccess callback".
     if (sceneRef.current) {
       wallMeshesRef.current.forEach((m) => m.dispose());
       sceneRef.current.dispose();
       engineRef.current?.dispose();
     }
+    let disposed = false;
 
     const engine = new Engine(canvasRef.current, true, {
       preserveDrawingBuffer: false,
@@ -115,6 +284,7 @@ export default function Viewer3D({
       new Vector3(bounds.cx, wallHeightMeters / 2, bounds.cz),
       scene,
     );
+    cameraRef.current = camera;
     camera.attachControl(canvasRef.current, true);
     camera.keysUp = [];
     camera.keysDown = [];
@@ -166,7 +336,8 @@ export default function Viewer3D({
       },
       scene,
     );
-    floor.position = new Vector3(bounds.cx, -0.05, bounds.cz);
+    const floorY = -0.05;
+    floor.position = new Vector3(bounds.cx, floorY, bounds.cz);
 
     const floorMat = new StandardMaterial("floorMat", scene);
     floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
@@ -182,7 +353,77 @@ export default function Viewer3D({
     };
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
     wallMeshesRef.current = wallMeshes;
-    const ourMeshes = [...wallMeshes];
+
+    // Load all hardcoded models at their fixed positions.
+    const modelMeshes = [];
+    const modelEntries = MODELS.map(({ url, position, scaling }) => {
+      const name = url
+        .split("/")
+        .pop()
+        .replace(/\.[^.]+$/, "");
+      return { url, position, scaling, name };
+    });
+    let loadedCount = 0;
+
+    for (const { url, position, scaling, name } of modelEntries) {
+      SceneLoader.Append(
+        "",
+        url,
+        scene,
+        (_scene, _rootUrl, loadedMeshes) => {
+          if (disposed) return; // scene was disposed before callback fired
+          try {
+            if (!loadedMeshes || loadedMeshes.length === 0) {
+              console.warn(`GLTF loaded but produced no meshes: ${url}`);
+              return;
+            }
+            loadedMeshes.forEach((m) => {
+              if (!m || !m.material) {
+                const mat = new PBRMaterial(
+                  `${m?.name || "unknown"}_mat`,
+                  scene,
+                );
+                mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
+                mat.metallic = 0.1;
+                mat.roughness = 0.7;
+                if (m) m.material = mat;
+              }
+              if (m) {
+                m.position = new Vector3(
+                  bounds.cx + position[0],
+                  position[1],
+                  bounds.cz + position[2],
+                );
+                m.scaling = new Vector3(scaling[0], scaling[1], scaling[2]);
+                m.castShadow = true;
+                m.receiveShadow = true;
+                modelMeshes.push(m);
+                meshToModelRef.current.set(m, {
+                  name,
+                  position: [...position],
+                  scaling: [...scaling],
+                  url,
+                });
+              }
+            });
+            loadedCount++;
+            setLoadedModels(
+              [...meshToModelRef.current.entries()].map(([mesh, entry]) => ({
+                ...entry,
+                mesh,
+              })),
+            );
+          } catch (err) {
+            console.error(`GLTF callback error for ${url}:`, err);
+          }
+        },
+        undefined,
+        (_scene, message) =>
+          console.error(`GLTF load failed: ${url}: ${message}`),
+      );
+    }
+
+    const ourMeshes = [...wallMeshes, ...modelMeshes];
 
     const wallMat = new PBRMaterial("wallMat", scene);
     wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
@@ -203,10 +444,84 @@ export default function Viewer3D({
         e.preventDefault();
       }
     };
-    canvasRef.current?.ownerDocument?.addEventListener("wheel", onWheel, { passive: false });
+    canvasRef.current?.ownerDocument?.addEventListener("wheel", onWheel, {
+      passive: false,
+    });
 
     const onContextMenu = (e) => e.preventDefault();
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
+
+    // ---- Drag-and-drop for model meshes ----
+    const FLOOR_Y = floorYRef.current;
+
+    const onPointerDown = (e) => {
+      if (e.button !== 0) return;
+      // Pick the mesh under the cursor.
+      const hit = scene.pick(e.clientX, e.clientY, (mesh) =>
+        meshToModelRef.current.has(mesh),
+      );
+      if (!hit.hit) return;
+      const picked = hit.pickedMesh;
+      if (!picked) return;
+      const modelEntry = meshToModelRef.current.get(picked);
+      if (!modelEntry) return;
+
+      // Compute the offset between the picked point and the model's position.
+      const groundRay = camera.getPickRay(FLOOR_Y);
+      const hitPoint = groundRay.ray.getPoint(0);
+      draggedMeshRef.current = picked;
+      dragOffsetRef.current.set(
+        picked.position.x - hitPoint.x,
+        picked.position.y - hitPoint.y,
+        picked.position.z - hitPoint.z,
+      );
+      setDraggedModel(modelEntry);
+      canvasRef.current.style.cursor = "grabbing";
+    };
+
+    const onPointerMove = () => {
+      const mesh = draggedMeshRef.current;
+      if (!mesh) return;
+      const ray = camera.getPickRay(FLOOR_Y);
+      const hitPoint = ray.ray.getPoint(0);
+      const offset = dragOffsetRef.current;
+      mesh.position.set(
+        hitPoint.x + offset.x,
+        hitPoint.y + offset.y,
+        hitPoint.z + offset.z,
+      );
+      // Update the model entry's position so the panel reflects the live position.
+      const entry = meshToModelRef.current.get(mesh);
+      if (entry) {
+        entry.position[0] = mesh.position.x - bounds.cx;
+        entry.position[1] = mesh.position.y;
+        entry.position[2] = mesh.position.z - bounds.cz;
+        setLoadedModels(
+          [...meshToModelRef.current.entries()].map(([m, e]) => ({
+            ...e,
+            mesh: m,
+          })),
+        );
+        if (draggedModel && draggedModel.mesh === mesh) {
+          setDraggedModel({ ...draggedModel, position: [...entry.position] });
+        }
+      }
+    };
+
+    const onPointerUp = () => {
+      if (draggedMeshRef.current) {
+        draggedMeshRef.current = null;
+        setDraggedModel(null);
+        canvasRef.current.style.cursor = "crosshair";
+      }
+    };
+
+    canvasRef.current.addEventListener("pointerdown", onPointerDown);
+    canvasRef.current.ownerDocument.addEventListener(
+      "pointermove",
+      onPointerMove,
+    );
+    canvasRef.current.ownerDocument.addEventListener("pointerup", onPointerUp);
 
     engine.runRenderLoop(() => {
       const keys = keysRef.current;
@@ -234,11 +549,23 @@ export default function Viewer3D({
     });
 
     return () => {
+      disposed = true;
       canvasRef.current?.removeEventListener("contextmenu", onContextMenu);
       canvasRef.current?.ownerDocument?.removeEventListener("wheel", onWheel);
+      canvasRef.current?.removeEventListener("pointerdown", onPointerDown);
+      canvasRef.current?.ownerDocument?.removeEventListener(
+        "pointermove",
+        onPointerMove,
+      );
+      canvasRef.current?.ownerDocument?.removeEventListener(
+        "pointerup",
+        onPointerUp,
+      );
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
+      // Dispose model meshes first (ourMeshes holds weak refs to them)
+      modelMeshes.forEach((m) => m.dispose());
       ourMeshes.forEach((m) => m.dispose());
       floor.dispose();
       wallMat.dispose();
@@ -274,50 +601,66 @@ export default function Viewer3D({
       style={{
         width: "100%",
         height: 500,
+        display: "flex",
         background: "#87ceeb",
-        cursor: "crosshair",
+        cursor: draggedModel ? "grabbing" : "crosshair",
       }}
     >
-      <canvas
-        ref={canvasRef}
-        tabIndex={0}
+      {/* 3D canvas area */}
+      <div
         style={{
-          width: "100%",
-          height: "100%",
-          border: "none",
-          outline: "none",
+          flex: 1,
+          position: "relative",
+          minHeight: 0,
         }}
-      />
-      {(!edges || edges.length === 0) && (
+      >
+        <canvas
+          ref={canvasRef}
+          tabIndex={0}
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "none",
+            outline: "none",
+          }}
+        />
+        {(!edges || edges.length === 0) && (
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              color: "#fff",
+              fontSize: 14,
+            }}
+          >
+            Loading 3D scene...
+          </div>
+        )}
         <div
           style={{
             position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
+            bottom: 8,
+            left: 8,
+            background: "rgba(0,0,0,0.5)",
             color: "#fff",
-            fontSize: 14,
+            padding: "4px 8px",
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: "sans-serif",
           }}
         >
-          Loading 3D scene...
+          WASD to move · Left-click to orbit · Drag models to reposition ·
+          Scroll to zoom
         </div>
-      )}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 8,
-          left: 8,
-          background: "rgba(0,0,0,0.5)",
-          color: "#fff",
-          padding: "4px 8px",
-          borderRadius: 4,
-          fontSize: 12,
-          fontFamily: "sans-serif",
-        }}
-      >
-        WASD to move · Left-click to orbit · Right-click to move camera · Scroll
-        to zoom
       </div>
+      {/* Model sidebar */}
+      <ModelPanel
+        models={loadedModels}
+        draggedModel={draggedModel}
+        onModelClick={onModelClick}
+      />
     </div>
   );
 }
