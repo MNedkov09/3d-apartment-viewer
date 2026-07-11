@@ -22,8 +22,8 @@ import { buildWallMeshes } from "./wallGeometry";
 // Register the GLTF loader once at module load time (global Babylon.js singleton).
 SceneLoader.RegisterPlugin(new GLTFFileLoader());
 
-/** Hardcoded list of .glb models to load, each at a different fixed position. */
-const MODELS = [
+// Default models to show when the user has no uploaded models yet.
+const DEFAULT_MODELS = [
   {
     url: "/models/placeholder.glb",
     position: [0, 0, 0],
@@ -40,6 +40,27 @@ const MODELS = [
     scaling: [1, 1, 1],
   },
 ];
+
+/**
+ * Fetch models from the API for the current user.
+ * Returns an array of { url, position, scaling, name } objects, or null on error.
+ */
+async function fetchUserModels() {
+  try {
+    const res = await fetch("/api/models?limit=100");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.models || []).map((m) => ({
+      url: m.file_path,
+      position: [0, 0, 0],
+      scaling: [1, 1, 1],
+      name: m.name,
+      thumbnail: m.thumbnail_path,
+    }));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Sidebar panel listing loaded models. Click a model to start dragging it
@@ -75,7 +96,7 @@ function ModelPanel({ models, draggedModel, onModelClick }) {
       </div>
       {models.length === 0 && (
         <div style={{ color: "rgba(255,255,255,0.4)", fontStyle: "italic" }}>
-          Loading…
+          Loading...
         </div>
       )}
       {models.map((m, i) => {
@@ -184,6 +205,19 @@ export default function Viewer3D({
   const [loadedModels, setLoadedModels] = useState([]);
   const [draggedModel, setDraggedModel] = useState(null);
 
+  // Fetch user models on mount and merge with defaults.
+  useEffect(() => {
+    let cancelled = false;
+    fetchUserModels().then((apiModels) => {
+      if (cancelled) return;
+      const modelsToLoad = apiModels && apiModels.length > 0 ? apiModels : DEFAULT_MODELS;
+      setLoadedModels(modelsToLoad);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Click a model in the panel to start dragging it in the scene.
   const onModelClick = useCallback((modelEntry) => {
     if (!modelEntry.mesh) return;
@@ -193,8 +227,11 @@ export default function Viewer3D({
     if (!cam || !scene) return;
     const flrY = floorYRef.current;
 
-    // Disable camera so it doesn't fight the drag.
-    cam.isActive = false;
+    // Disable camera so it doesn't fight the drag.  Use detachControl() to
+    // fully remove Babylon's internal event listeners (not just isActive),
+    // which is required for reliable re-attachment after a sidebar-initiated
+    // drag that never calls pointerdown on the canvas.
+    cam.detachControl();
 
     // Compute camera→ground intersection (canvas center, since there's no
     // actual pointer event from the sidebar click).
@@ -281,6 +318,9 @@ export default function Viewer3D({
     return Math.max(maxExtent * 1.8, 10);
   }, [edges, pixelsPerMeter]);
 
+  // ---- Scene lifecycle: only depends on `edges` ----
+  // When edges change the scene is rebuilt (floor/walls resize).
+  // Model loading is handled separately by the "load models" effect below.
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
@@ -384,90 +424,7 @@ export default function Viewer3D({
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
     wallMeshesRef.current = wallMeshes;
 
-    // Load all hardcoded models at their fixed positions.
-    const modelMeshes = [];
-    const modelEntries = MODELS.map(({ url, position, scaling }) => {
-      const name = url
-        .split("/")
-        .pop()
-        .replace(/\.[^.]+$/, "");
-      return { url, position, scaling, name };
-    });
-    let loadedCount = 0;
-
-    for (const { url, position, scaling, name } of modelEntries) {
-      // Snapshot current scene mesh count so the async callback can
-      // distinguish newly loaded meshes from previously loaded ones.
-      const prevMeshCount = scene.meshes.length;
-      SceneLoader.Append(
-        "",
-        url,
-        scene,
-        (_scene) => {
-          if (disposed) return; // scene was disposed before callback fired
-          try {
-            // Use scene.getMeshes() instead of the loadedMeshes callback
-            // parameter — when the GLTF root node has no direct meshes
-            // (only nested children do), loadedMeshes is empty but the
-            // scene graph is fully populated.
-            const allMeshes = scene.meshes;
-            const newMeshes = allMeshes.slice(prevMeshCount);
-            const modelMeshesInRange = newMeshes.filter(
-              (m) => m !== floor && !wallMeshesRef.current.includes(m),
-            );
-            if (modelMeshesInRange.length === 0) {
-              console.warn(
-                `GLTF loaded but produced no visible geometry: ${url}`,
-              );
-              return;
-            }
-            modelMeshesInRange.forEach((m) => {
-              if (!m || !m.material) {
-                const mat = new PBRMaterial(
-                  `${m?.name || "unknown"}_mat`,
-                  scene,
-                );
-                mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
-                mat.metallic = 0.1;
-                mat.roughness = 0.7;
-                if (m) m.material = mat;
-              }
-              if (m) {
-                m.position = new Vector3(
-                  bounds.cx + position[0],
-                  position[1],
-                  bounds.cz + position[2],
-                );
-                m.scaling = new Vector3(scaling[0], scaling[1], scaling[2]);
-                m.castShadow = true;
-                m.receiveShadow = true;
-                modelMeshes.push(m);
-                meshToModelRef.current.set(m, {
-                  name,
-                  position: [...position],
-                  scaling: [...scaling],
-                  url,
-                });
-              }
-            });
-            loadedCount++;
-            setLoadedModels(
-              [...meshToModelRef.current.entries()].map(([mesh, entry]) => ({
-                ...entry,
-                mesh,
-              })),
-            );
-          } catch (err) {
-            console.error(`GLTF callback error for ${url}:`, err);
-          }
-        },
-        undefined,
-        (_scene, message) =>
-          console.error(`GLTF load failed: ${url}: ${message}`),
-      );
-    }
-
-    const ourMeshes = [...wallMeshes, ...modelMeshes];
+    const ourMeshes = [...wallMeshes];
 
     const wallMat = new PBRMaterial("wallMat", scene);
     wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
@@ -536,8 +493,9 @@ export default function Viewer3D({
       const modelEntry = meshToModelRef.current.get(picked);
       if (!modelEntry) return;
 
-      // Disable camera orbit/WASD so the drag doesn't fight the camera.
-      camera.isActive = false;
+      // Disable camera so Babylon can't process pointer events (orbit/zoom)
+      // during drag — isActive alone is insufficient for left-drag orbit.
+      camera.detachControl();
 
       // Cast ray from camera through cursor onto ground plane to get initial hit.
       const hitPoint = rayGroundIntersect(
@@ -547,7 +505,7 @@ export default function Viewer3D({
         ptrY,
       );
       if (!hitPoint) {
-        camera.isActive = true;
+        camera.attachControl(canvasRef.current, true);
         return;
       }
 
@@ -599,11 +557,22 @@ export default function Viewer3D({
     const onPointerUp = () => {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
-      camera.isActive = true;
 
+      // Always re-enable camera interaction, regardless of which path ended
+      // the drag (sidebar click vs. in-scene pointerdown).  The sidebar path
+      // never calls detachControl() before dragging — we use isActive=false
+      // there — so this is essential for unlocking the camera after a drop.
+      const cam = cameraRef.current;
+      if (cam) {
+        cam.isActive = true;
+        if (!cam.inputs.attachedToElement) {
+          cam.attachControl(canvasRef.current, true);
+        }
+      }
+
+      // Sync final position into the model entry.
       const mesh = draggedMeshRef.current;
       if (mesh) {
-        // Sync final position into the model entry.
         const entry = meshToModelRef.current.get(mesh);
         if (entry) {
           entry.position[0] = mesh.position.x - bounds.cx;
@@ -612,8 +581,8 @@ export default function Viewer3D({
         }
         draggedMeshRef.current = null;
         setDraggedModel(null);
-        canvasRef.current.style.cursor = "crosshair";
       }
+      canvasRef.current.style.cursor = "crosshair";
     };
 
     canvasRef.current.addEventListener("pointerdown", onPointerDown);
@@ -664,8 +633,6 @@ export default function Viewer3D({
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
-      // Dispose model meshes first (ourMeshes holds weak refs to them)
-      modelMeshes.forEach((m) => m.dispose());
       ourMeshes.forEach((m) => m.dispose());
       floor.dispose();
       wallMat.dispose();
@@ -685,6 +652,83 @@ export default function Viewer3D({
     wallHeightMeters,
     wallThicknessMeters,
   ]);
+
+  // ---- Load models: independent of scene lifecycle ----
+  // Fetches models from the API (or falls back to defaults) and loads them
+  // into the existing scene. Runs on mount and whenever the model list changes.
+  useEffect(() => {
+    if (!sceneRef.current) return;
+
+    const modelsToLoad = loadedModels.length > 0 ? loadedModels : DEFAULT_MODELS;
+    const scene = sceneRef.current;
+    let disposed = false;
+
+    const modelMeshes = [];
+
+    for (const { url, position, scaling } of modelsToLoad) {
+      const name = url.split("/").pop().replace(/\.[^.]+$/, "");
+      const prevMeshCount = scene.meshes.length;
+
+      SceneLoader.Append(
+        "",
+        url,
+        scene,
+        () => {
+          if (disposed) return;
+          const allMeshes = scene.meshes;
+          const newMeshes = allMeshes.slice(prevMeshCount);
+          const floor = scene.getMeshByName("floor");
+          const modelMeshesInRange = newMeshes.filter(
+            (m) => m !== floor && !wallMeshesRef.current.includes(m),
+          );
+          if (modelMeshesInRange.length === 0) {
+            console.warn(`GLTF loaded but produced no visible geometry: ${url}`);
+            return;
+          }
+          modelMeshesInRange.forEach((m) => {
+            if (!m || !m.material) {
+              const mat = new PBRMaterial(`${m?.name || "unknown"}_mat`, scene);
+              mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
+              mat.metallic = 0.1;
+              mat.roughness = 0.7;
+              if (m) m.material = mat;
+            }
+            if (m) {
+              m.position = new Vector3(
+                bounds.cx + position[0],
+                position[1],
+                bounds.cz + position[2],
+              );
+              m.scaling = new Vector3(scaling[0], scaling[1], scaling[2]);
+              m.castShadow = true;
+              m.receiveShadow = true;
+              modelMeshes.push(m);
+              meshToModelRef.current.set(m, {
+                name,
+                position: [...position],
+                scaling: [...scaling],
+                url,
+              });
+            }
+          });
+          setLoadedModels(
+            [...meshToModelRef.current.entries()].map(([mesh, entry]) => ({
+              ...entry,
+              mesh,
+            })),
+          );
+        },
+        undefined,
+        (_scene, message) =>
+          console.error(`GLTF load failed: ${url}: ${message}`),
+      );
+    }
+    // Dispose model meshes on unload / re-fetch
+    return () => {
+      disposed = true;
+      modelMeshes.forEach((m) => m.dispose());
+    };
+  }, [loadedModels, bounds]);
 
   useEffect(() => {
     const handleResize = () => {
