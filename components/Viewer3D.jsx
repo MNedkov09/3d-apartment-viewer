@@ -148,36 +148,20 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
 }
 
 /**
- * Built-in sample models shipped in public/models/. These load instantly on
- * a fresh clone — no database or auth setup needed.
- */
-const LOCAL_SAMPLES = [
-  { name: "Chair IKEA", url: "/models/ChairIKEA_test.glb" },
-  { name: "Table B1", url: "/models/TableB1.glb" },
-  { name: "Table S2", url: "/models/TableS2.glb" },
-];
-
-/**
- * Fetch models from the API endpoint (public/uploads/models/), merge with
- * local samples, and deduplicate by URL so nothing appears twice.
+ * Fetch models from the API endpoint (public/uploads/models/).
  */
 async function fetchUserModels() {
-  let apiModels = [];
   try {
     const res = await fetch("/api/models?limit=100");
-    if (res.ok) {
-      const data = await res.json();
-      apiModels = (data.models || []).map((m) => ({
-        name: m.name,
-        url: m.file_path,
-      }));
-    }
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.models || []).map((m) => ({
+      name: m.name,
+      url: m.file_path,
+    }));
   } catch {
-    // API unavailable — fall through to local samples only.
+    return [];
   }
-  // Merge API + local; skip any model whose URL already appeared in the other set.
-  const seen = new Set(apiModels.map((m) => m.url));
-  return [...apiModels, ...LOCAL_SAMPLES.filter((s) => !seen.has(s.url))];
 }
 
 /**
