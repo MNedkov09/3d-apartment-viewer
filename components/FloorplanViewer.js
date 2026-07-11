@@ -221,33 +221,84 @@ function splitEdgeAtCorners(edge) {
 }
 
 /* ---------- Wall-network isolation ---------- */
-// Real floorplans draw walls as one continuous connected network: every partition
-// wall touches another wall or the exterior envelope somewhere. Furniture and
-// other clutter are drawn as separate shapes that don't touch that network. So
-// instead of trying to classify furniture by stroke weight (which breaks once a
-// window is embedded in a wall run — see below), we just keep the single
-// connected component with the largest bounding-box footprint. The wall envelope
-// reliably spans almost the entire floorplan image; any individual piece of
-// furniture only covers a small local area, even if solidly filled.
-function selectWallComponent(labels, stats, numLabels, rows, cols) {
-  let bestLabel = -1;
-  let bestFootprint = -1;
+// "Keep only the single largest connected blob" assumed the whole wall
+// network is always one unbroken piece. That's true for simple test
+// drawings, but real architectural floorplans break it constantly — a
+// doorway with no wall pixels bridging it, a rendering gap at a corner, a
+// dashed section — any of which splits the wall network into several
+// separate components. Picking just one then throws most of the house away
+// (exactly what happened here: only the master bedroom corner survived).
+//
+// What's actually reliable across virtually every floorplan convention is
+// that walls are drawn in a distinctly bolder stroke than everything else on
+// the page — text labels, dimension lines, fixture icons, hatching, door
+// swings. So we classify every sizeable component by its own stroke
+// thickness (via a distance transform, same technique as the window/curve
+// detection above) and keep *every* component that reads as wall-weight,
+// however many separate pieces the wall network is actually split into.
+function splitComponentsByThickness(mask, labels, stats, numLabels, rows, cols) {
+  const dist = new cv.Mat();
+  cv.distanceTransform(mask, dist, cv.DIST_L2, 5);
+  const distData = dist.data32F;
+  const labelData = labels.data32S;
+
+  const sums = new Float64Array(numLabels);
+  const counts = new Int32Array(numLabels);
+  for (let p = 0; p < rows * cols; p++) {
+    const lbl = labelData[p];
+    if (lbl === 0) continue;
+    sums[lbl] += distData[p];
+    counts[lbl] += 1;
+  }
+  dist.delete();
+
+  const entries = [];
   for (let i = 1; i < numLabels; i++) {
-    if (stats.intAt(i, cv.CC_STAT_AREA) <= MIN_AREA) continue;
-    const bboxW = stats.intAt(i, cv.CC_STAT_WIDTH);
-    const bboxH = stats.intAt(i, cv.CC_STAT_HEIGHT);
-    const footprint = bboxW * bboxH;
-    if (footprint > bestFootprint) {
-      bestFootprint = footprint;
-      bestLabel = i;
+    if (!counts[i] || stats.intAt(i, cv.CC_STAT_AREA) <= MIN_AREA) continue;
+    entries.push({ label: i, thickness: (sums[i] / counts[i]) * 2 });
+  }
+
+  if (entries.length < 2) {
+    return new Set(entries.map((e) => e.label));
+  }
+
+  const sorted = [...entries].sort((a, b) => a.thickness - b.thickness);
+  let maxGap = -1,
+    gapIdx = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].thickness - sorted[i - 1].thickness;
+    if (gap > maxGap) {
+      maxGap = gap;
+      gapIdx = i;
     }
   }
 
+  const thinCeiling = sorted[gapIdx - 1].thickness;
+  // Require a genuinely bimodal split (a gap that's a large fraction of the
+  // thin cluster's own thickness); otherwise treat every sizeable component
+  // as wall-weight — safer than accidentally discarding real walls when
+  // nothing thin stands out to separate from them.
+  if (gapIdx === 0 || thinCeiling <= 0 || maxGap < thinCeiling * 0.6) {
+    return new Set(sorted.map((e) => e.label));
+  }
+
+  return new Set(sorted.slice(gapIdx).map((e) => e.label));
+}
+
+function selectWallComponents(mask, labels, stats, numLabels, rows, cols) {
+  const thickLabels = splitComponentsByThickness(
+    mask,
+    labels,
+    stats,
+    numLabels,
+    rows,
+    cols,
+  );
+
   const wallData = new Uint8Array(rows * cols);
-  if (bestLabel === -1) return wallData;
   const labelData = labels.data32S;
   for (let p = 0; p < rows * cols; p++) {
-    wallData[p] = labelData[p] === bestLabel ? 1 : 0;
+    if (thickLabels.has(labelData[p])) wallData[p] = 1;
   }
   return wallData;
 }
@@ -432,7 +483,7 @@ function segmentMasks(canvas, image) {
     );
     ((rows = mask.rows), (cols = mask.cols));
 
-    const wallData = selectWallComponent(labels, stats, numLabels, rows, cols);
+    const wallData = selectWallComponents(mask, labels, stats, numLabels, rows, cols);
 
     const wallMat = new cv.Mat(rows, cols, cv.CV_8UC1);
     wallMat.data.set(wallData);
@@ -530,6 +581,122 @@ function snapToNearestEndpoint(pt, edges, tolerance) {
   return best;
 }
 
+/* ---------- Door-swing arc rejection ---------- */
+// Door swing arcs are drawn as a thin quarter-circle touching the wall at
+// both ends, so they get traced as their own branch off the wall skeleton —
+// same mechanism that pulled window mullions in before that was fixed. A
+// real wall path is either straight or has one isolated sharp corner; an arc
+// is a long run of many *small* turns that all curve the same direction.
+// IMPORTANT: this has to run on the RAW (dense, unsimplified) skeleton
+// chain, not the corner-simplification output — a small door arc collapses
+// to only a handful of points after approxPolyDP, which isn't enough
+// samples to see a curve in. Resampling the raw chain at a fixed spacing
+// also means classification doesn't depend on how many pixels the arc
+// happens to span on screen.
+
+const ARC_RESAMPLE_STEP_PX = 8; // spacing between smoothed sample points along the raw skeleton chain
+const ARC_MIN_SAMPLES = 4; // need several resampled points before curvature is even measurable
+const ARC_MAX_AVG_TURN = (45 * Math.PI) / 180; // radians (~45°) per resampled step; real corners jump close to 90° in one step, curve steps stay well under this
+const ARC_MIN_TOTAL_ABS_TURN = (40 * Math.PI) / 180; // radians (~40°): total curvature must be substantial, not just skeleton jitter on a straight run
+const ARC_MAX_SINGLE_TURN_FRACTION = 0.35; // no single resampled turn may account for more than this share of the total — real corners concentrate ~all their turning in one step, a curve spreads it out
+
+// Smooth + resample the raw skeleton chain at an even spacing. This has to be
+// a genuine moving-average (not just picking/interpolating between the two
+// nearest raw points), otherwise per-pixel skeleton noise on an otherwise
+// straight wall passes straight through untouched and gets mistaken for
+// curvature. Averaging every raw point within +-step/2 of each sample
+// position filters that noise out while a real curve's larger-scale bend
+// survives fine.
+function smoothedResample(points, closed, step) {
+  const pts = closed ? [...points, points[0]] : points;
+  if (pts.length < 2) return pts;
+
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(
+      cum[i - 1] +
+        Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]),
+    );
+  }
+  const total = cum[cum.length - 1];
+  if (total < step) return pts;
+
+  const halfWin = step / 2;
+  const result = [];
+  for (let d = 0; d <= total; d += step) {
+    let sx = 0,
+      sy = 0,
+      count = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (cum[i] >= d - halfWin && cum[i] <= d + halfWin) {
+        sx += pts[i][0];
+        sy += pts[i][1];
+        count++;
+      }
+    }
+    if (count === 0) {
+      let bestI = 0,
+        bestDist = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const dd = Math.abs(cum[i] - d);
+        if (dd < bestDist) {
+          bestDist = dd;
+          bestI = i;
+        }
+      }
+      result.push([pts[bestI][0], pts[bestI][1]]);
+    } else {
+      result.push([sx / count, sy / count]);
+    }
+  }
+  return result;
+}
+
+function turningAnglesOpen(points) {
+  const turns = [];
+  for (let i = 1; i < points.length - 1; i++) {
+    const [ax, ay] = points[i - 1];
+    const [bx, by] = points[i];
+    const [cx, cy] = points[i + 1];
+    const v1x = bx - ax,
+      v1y = by - ay;
+    const v2x = cx - bx,
+      v2y = cy - by;
+    const cross = v1x * v2y - v1y * v2x;
+    const dot = v1x * v2x + v1y * v2y;
+    turns.push(Math.atan2(cross, dot));
+  }
+  return turns;
+}
+
+function isDoorSwingArc(rawPoints, closed) {
+  if (rawPoints.length < 4) return false;
+
+  const resampled = smoothedResample(rawPoints, closed, ARC_RESAMPLE_STEP_PX);
+  if (resampled.length < ARC_MIN_SAMPLES) return false;
+
+  const turns = turningAnglesOpen(resampled);
+  if (turns.length === 0) return false;
+  const sumAbs = turns.reduce((s, t) => s + Math.abs(t), 0);
+  if (sumAbs < 1e-6) return false;
+  const avgAbs = sumAbs / turns.length;
+  const maxAbs = Math.max(...turns.map((t) => Math.abs(t)));
+
+  // Direction doesn't matter here on purpose: several arcs meeting (e.g. door
+  // swings from adjacent openings touching in the middle, like a quatrefoil)
+  // reverse curvature at each meeting point, which would break a
+  // same-direction check. What's still true regardless of shape is that a
+  // curve spreads its turning across many small-to-moderate steps, none of
+  // which dominates — while real wall geometry concentrates nearly all its
+  // turning into one sharp, isolated corner.
+  return (
+    avgAbs < ARC_MAX_AVG_TURN &&
+    sumAbs > ARC_MIN_TOTAL_ABS_TURN &&
+    maxAbs < sumAbs * ARC_MAX_SINGLE_TURN_FRACTION
+  );
+}
+
+
 function extractWallGraph(canvas, image) {
   const {
     wallData,
@@ -547,6 +714,7 @@ function extractWallGraph(canvas, image) {
   const finalEdges = [];
   const cornerNodeSet = new Set();
   for (const raw of rawWallEdges) {
+    if (isDoorSwingArc(raw.points, raw.closed)) continue; // curved door-swing line, not a wall
     const simplified = {
       points: simplifyChain(raw.points, raw.closed),
       closed: raw.closed,
