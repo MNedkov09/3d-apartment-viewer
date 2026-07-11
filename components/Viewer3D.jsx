@@ -14,6 +14,7 @@ import {
   ShadowGenerator,
   SceneLoader,
   Matrix,
+  CSG,
 } from "@babylonjs/core";
 import { Plane } from "@babylonjs/core";
 import { GLTFFileLoader } from "@babylonjs/loaders";
@@ -52,9 +53,101 @@ function rayGroundIntersect(scene, cam, canvas, flrY, ptrX, ptrY) {
 }
 
 /**
- * Fetch model metadata from the API for the current user.
- * Returns list info only — does NOT load models into the scene.
+ * Carve rectangular window openings into already-built wall meshes.
+ *
+ * The floorplan pipeline gives us each window as a straight segment in image
+ * pixel space (`start`/`end`, same coordinate space as `edges`) plus its
+ * opening width across the wall's thickness. It intentionally does NOT leave
+ * a gap in the wall graph at the window — the wall path is bridged back to
+ * continuous there so buildWallMeshes produces a normal, solid, full-height
+ * wall segment. This function is what actually turns that solid stretch into
+ * an opening: for each window, it builds a box sized to the window's plan
+ * footprint and a configurable sill/head height, then CSG-subtracts that box
+ * from any wall mesh whose bounding box overlaps it. This keeps the wall
+ * solid below the sill and above the head, exactly as if a real window had
+ * been installed in a solid wall.
+ *
+ * Runs once per (re)build, not per frame — CSG is too slow for real-time use,
+ * but is fine for a handful of one-off subtractions when the scene loads.
  */
+function cutWindowOpenings(windows, wallMeshes, opts, scene) {
+  const { scale, wallThickness, sillHeight, windowHeight, wallHeight } = opts;
+  const headHeight = sillHeight + windowHeight;
+  if (headHeight >= wallHeight) {
+    console.warn(
+      "Window head height reaches the ceiling — check sillHeightMeters/windowHeightMeters vs wallHeightMeters.",
+    );
+  }
+
+  const remainingMeshes = [...wallMeshes];
+
+  for (const win of windows) {
+    const startX = win.start[0] * scale;
+    const startZ = win.start[1] * scale;
+    const endX = win.end[0] * scale;
+    const endZ = win.end[1] * scale;
+    const dX = endX - startX;
+    const dZ = endZ - startZ;
+    const openingLength = Math.hypot(dX, dZ);
+    if (openingLength < 0.05) continue; // degenerate, skip
+
+    const centerX = (startX + endX) / 2;
+    const centerZ = (startZ + endZ) / 2;
+    const centerY = sillHeight + windowHeight / 2;
+    const angle = Math.atan2(dZ, dX);
+
+    // Cutter is intentionally oversized a little in every direction so it
+    // fully punches through the wall face instead of leaving razor-thin
+    // leftover slivers from floating-point misses at the boundary.
+    const cutter = MeshBuilder.CreateBox(
+      "windowCutter",
+      {
+        width: openingLength + 0.04,
+        height: windowHeight,
+        depth: wallThickness * 2,
+      },
+      scene,
+    );
+    cutter.position.set(centerX, centerY, centerZ);
+    cutter.rotation.y = angle;
+    cutter.computeWorldMatrix(true);
+
+    const cutterBounds = cutter.getBoundingInfo().boundingBox;
+
+    for (let i = 0; i < remainingMeshes.length; i++) {
+      const wallMesh = remainingMeshes[i];
+      if (!wallMesh || wallMesh.isDisposed()) continue;
+
+      wallMesh.computeWorldMatrix(true);
+      const wallBounds = wallMesh.getBoundingInfo().boundingBox;
+      const overlaps =
+        wallBounds.maximumWorld.x >= cutterBounds.minimumWorld.x &&
+        wallBounds.minimumWorld.x <= cutterBounds.maximumWorld.x &&
+        wallBounds.maximumWorld.y >= cutterBounds.minimumWorld.y &&
+        wallBounds.minimumWorld.y <= cutterBounds.maximumWorld.y &&
+        wallBounds.maximumWorld.z >= cutterBounds.minimumWorld.z &&
+        wallBounds.minimumWorld.z <= cutterBounds.maximumWorld.z;
+      if (!overlaps) continue;
+
+      const wallCSG = CSG.FromMesh(wallMesh);
+      const cutterCSG = CSG.FromMesh(cutter);
+      const resultCSG = wallCSG.subtract(cutterCSG);
+      const material = wallMesh.material;
+      const name = wallMesh.name;
+      const resultMesh = resultCSG.toMesh(name, material, scene);
+      resultMesh.material = material;
+
+      wallMesh.dispose();
+      remainingMeshes[i] = resultMesh;
+    }
+
+    cutter.dispose();
+  }
+
+  return remainingMeshes;
+}
+
+
 async function fetchUserModels() {
   try {
     const res = await fetch("/api/models?limit=100");
@@ -249,9 +342,12 @@ function ModelPanel({
  */
 export default function Viewer3D({
   edges,
+  windows = [],
   pixelsPerMeter = 50,
   wallHeightMeters = 2.7,
   wallThicknessMeters = 0.15,
+  sillHeightMeters = 0.9,
+  windowHeightMeters = 1.2,
 }) {
   const canvasRef = useRef(null);
   const engineRef = useRef(null);
@@ -611,9 +707,6 @@ export default function Viewer3D({
       scale: 1 / pixelsPerMeter,
     };
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
-    wallMeshesRef.current = wallMeshes;
-
-    const ourMeshes = [...wallMeshes];
 
     const wallMat = new PBRMaterial("wallMat", scene);
     wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
@@ -624,6 +717,34 @@ export default function Viewer3D({
       mesh.castShadow = true;
       mesh.receiveShadow = true;
     });
+
+    // Carve window openings into the solid wall meshes we just built. This
+    // runs after material assignment so CSG.toMesh can carry the material
+    // straight through; shadow flags don't survive the rebuild, so they're
+    // reapplied below on whatever mesh array comes back (a mix of untouched
+    // originals and CSG results).
+    const cutWallMeshes =
+      windows && windows.length > 0
+        ? cutWindowOpenings(
+            windows,
+            wallMeshes,
+            {
+              scale: 1 / pixelsPerMeter,
+              wallThickness: wallThicknessMeters,
+              sillHeight: sillHeightMeters,
+              windowHeight: windowHeightMeters,
+              wallHeight: wallHeightMeters,
+            },
+            scene,
+          )
+        : wallMeshes;
+    cutWallMeshes.forEach((mesh) => {
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    });
+
+    wallMeshesRef.current = cutWallMeshes;
+    const ourMeshes = [...cutWallMeshes];
 
     const _forward = Vector3.Zero();
     const _right = Vector3.Zero();
@@ -811,11 +932,14 @@ export default function Viewer3D({
     };
   }, [
     edges,
+    windows,
     pixelsPerMeter,
     cameraDistance,
     bounds,
     wallHeightMeters,
     wallThicknessMeters,
+    sillHeightMeters,
+    windowHeightMeters,
   ]);
 
   useEffect(() => {

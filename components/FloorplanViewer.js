@@ -220,7 +220,134 @@ function splitEdgeAtCorners(edge) {
   return { edges: subEdges, cornerNodes };
 }
 
-function buildSkeleton(canvas, image) {
+/* ---------- Wall-network isolation ---------- */
+// Real floorplans draw walls as one continuous connected network: every partition
+// wall touches another wall or the exterior envelope somewhere. Furniture and
+// other clutter are drawn as separate shapes that don't touch that network. So
+// instead of trying to classify furniture by stroke weight (which breaks once a
+// window is embedded in a wall run — see below), we just keep the single
+// connected component with the largest bounding-box footprint. The wall envelope
+// reliably spans almost the entire floorplan image; any individual piece of
+// furniture only covers a small local area, even if solidly filled.
+function selectWallComponent(labels, stats, numLabels, rows, cols) {
+  let bestLabel = -1;
+  let bestFootprint = -1;
+  for (let i = 1; i < numLabels; i++) {
+    if (stats.intAt(i, cv.CC_STAT_AREA) <= MIN_AREA) continue;
+    const bboxW = stats.intAt(i, cv.CC_STAT_WIDTH);
+    const bboxH = stats.intAt(i, cv.CC_STAT_HEIGHT);
+    const footprint = bboxW * bboxH;
+    if (footprint > bestFootprint) {
+      bestFootprint = footprint;
+      bestLabel = i;
+    }
+  }
+
+  const wallData = new Uint8Array(rows * cols);
+  if (bestLabel === -1) return wallData;
+  const labelData = labels.data32S;
+  for (let p = 0; p < rows * cols; p++) {
+    wallData[p] = labelData[p] === bestLabel ? 1 : 0;
+  }
+  return wallData;
+}
+
+/* ---------- Window detection (holes in the wall stroke) ---------- */
+// On the reference symbol, a window isn't a separate line floating near a wall —
+// it's a break in the wall's solid fill: the ink stays connected (thin strokes
+// continue along both wall faces) but a gap opens up between them. That gap is an
+// *interior hole* in the wall's connected-component shape. We find it directly
+// with cv.findContours' hierarchy (RETR_CCOMP marks any contour that has a parent
+// as a hole inside a filled region) instead of trying to track line thickness
+// point-by-point along the skeleton, which washes out once the window sits in the
+// middle of an otherwise-thick, unbroken wall run.
+
+const WINDOW_MIN_ASPECT = 2.2; // long/short ratio required for a hole to read as a window slit, not a stray nick
+const WINDOW_MAX_SHORT_FACTOR = 1.6; // hole's short side must be <= this * wall thickness
+const WINDOW_MIN_LONG_FACTOR = 1.4; // hole's long side must be >= this * wall thickness
+const WINDOW_MAX_LONG_PX = 220; // hard ceiling so a room interior is never mistaken for a window
+
+function estimateWallThickness(wallMat, rows, cols) {
+  const dist = new cv.Mat();
+  cv.distanceTransform(wallMat, dist, cv.DIST_L2, 5);
+  const distData = dist.data32F;
+  const vals = [];
+  for (let p = 0; p < rows * cols; p++) {
+    if (distData[p] > 0.5) vals.push(distData[p]);
+  }
+  dist.delete();
+  if (!vals.length) return 4;
+  vals.sort((a, b) => a - b);
+  const idx = Math.min(vals.length - 1, Math.floor(vals.length * 0.9));
+  return vals[idx] * 2;
+}
+
+function findWindowHoles(wallMat, rows, cols) {
+  const wallThickness = estimateWallThickness(wallMat, rows, cols);
+
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.findContours(
+    wallMat,
+    contours,
+    hierarchy,
+    cv.RETR_CCOMP,
+    cv.CHAIN_APPROX_SIMPLE,
+  );
+
+  const windows = [];
+  const hData = hierarchy.data32S; // rows of [next, previous, firstChild, parent]
+  for (let i = 0; i < contours.size(); i++) {
+    const parent = hData[i * 4 + 3];
+    if (parent === -1) continue; // outer boundary, not a hole
+
+    const contour = contours.get(i);
+    const area = cv.contourArea(contour);
+    if (area < 4) {
+      contour.delete();
+      continue;
+    }
+    const rect = cv.minAreaRect(contour);
+    contour.delete();
+
+    const long = Math.max(rect.size.width, rect.size.height);
+    const short = Math.min(rect.size.width, rect.size.height);
+    if (
+      short <= 0 ||
+      long <= 0 ||
+      long / short < WINDOW_MIN_ASPECT ||
+      short > wallThickness * WINDOW_MAX_SHORT_FACTOR ||
+      long < wallThickness * WINDOW_MIN_LONG_FACTOR ||
+      long > WINDOW_MAX_LONG_PX
+    ) {
+      continue;
+    }
+
+    // OpenCV's rotated-rect angle convention differs across builds/versions, so
+    // derive the long-axis direction from which side is longer rather than
+    // trusting the angle's sign. If windows come out rotated 90 degrees off in
+    // practice, this is the spot to flip.
+    const angleRad = (rect.angle * Math.PI) / 180;
+    const dirRad =
+      rect.size.width >= rect.size.height ? angleRad : angleRad + Math.PI / 2;
+    const hx = Math.cos(dirRad) * (long / 2);
+    const hy = Math.sin(dirRad) * (long / 2);
+
+    windows.push({
+      start: [rect.center.x - hx, rect.center.y - hy],
+      end: [rect.center.x + hx, rect.center.y + hy],
+      width: short,
+    });
+  }
+
+  contours.delete();
+  hierarchy.delete();
+  return windows;
+}
+
+/* ---------- OpenCV segmentation ---------- */
+
+function segmentMasks(canvas, image) {
   const ctx = canvas.getContext("2d");
   const s = Math.min(CANVAS_W / image.width, CANVAS_H / image.height);
   const w = image.width * s;
@@ -304,34 +431,15 @@ function buildSkeleton(canvas, image) {
       cv.CV_32S,
     );
     ((rows = mask.rows), (cols = mask.cols));
-    const labelData = labels.data32S;
 
-    const keep = new Uint8Array(numLabels);
-    for (let i = 1; i < numLabels; i++) {
-      if (stats.intAt(i, cv.CC_STAT_AREA) > MIN_AREA) keep[i] = 1;
-    }
-    const wallData = new Uint8Array(rows * cols);
-    for (let p = 0; p < rows * cols; p++) {
-      wallData[p] = keep[labelData[p]] ? 1 : 0;
-    }
+    const wallData = selectWallComponent(labels, stats, numLabels, rows, cols);
 
-    const skeleton = zhangSuenThinning(wallData, cols, rows);
+    const wallMat = new cv.Mat(rows, cols, cv.CV_8UC1);
+    wallMat.data.set(wallData);
+    const windows = findWindowHoles(wallMat, rows, cols);
+    wallMat.delete();
 
-    const border = PAD;
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (
-          y < border ||
-          y >= rows - border ||
-          x < border ||
-          x >= cols - border
-        ) {
-          skeleton[y * cols + x] = 0;
-        }
-      }
-    }
-
-    return { skeleton, cols, rows };
+    return { wallData, windows, cols, rows };
   } finally {
     src.delete();
     gray.delete();
@@ -343,17 +451,102 @@ function buildSkeleton(canvas, image) {
   }
 }
 
+function skeletonizeAndTrace(binaryData, cols, rows) {
+  const skeleton = zhangSuenThinning(binaryData, cols, rows);
+
+  const border = PAD;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (
+        y < border ||
+        y >= rows - border ||
+        x < border ||
+        x >= cols - border
+      ) {
+        skeleton[y * cols + x] = 0;
+      }
+    }
+  }
+
+  return traceSkeletonGraph(skeleton, cols, rows);
+}
+
+/* ---------- Keeping windows and walls mutually exclusive ---------- */
+// A window hole leaves the wall's skeleton bifurcated into two thin stub
+// lines hugging the sides of the opening (see findWindowHoles above) —
+// without this step, both stubs come back as ordinary wall edges and the
+// window still reads as solid wall. We drop those stub artifacts, then
+// stitch a single straight edge across the gap so the wall PATH stays
+// continuous (so a normal, solid wall gets built there) — Viewer3D is what
+// actually carves the window-height opening out of that solid wall later.
+
+const WINDOW_EXCLUDE_PAD = 4; // px: margin so stub artifacts hugging a window are reliably caught
+const WINDOW_SNAP_TOLERANCE = 10; // px: snap a window's bridge endpoint onto a real wall endpoint if one is close by
+
+function pointInWindowBox(pt, win, pad) {
+  const dx = win.end[0] - win.start[0];
+  const dy = win.end[1] - win.start[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len,
+    uy = dy / len;
+  const nx = -uy,
+    ny = ux;
+  const cx = (win.start[0] + win.end[0]) / 2;
+  const cy = (win.start[1] + win.end[1]) / 2;
+  const relX = pt[0] - cx,
+    relY = pt[1] - cy;
+  const along = relX * ux + relY * uy;
+  const across = relX * nx + relY * ny;
+  const halfLen = len / 2 + pad;
+  const halfWidth = (win.width || 4) / 2 + pad;
+  return Math.abs(along) <= halfLen && Math.abs(across) <= halfWidth;
+}
+
+function edgeMostlyInsideWindows(edge, windows, pad) {
+  if (edge.points.length === 0 || windows.length === 0) return false;
+  for (const win of windows) {
+    let insideCount = 0;
+    for (const pt of edge.points) {
+      if (pointInWindowBox(pt, win, pad)) insideCount++;
+    }
+    if (insideCount / edge.points.length > 0.6) return true;
+  }
+  return false;
+}
+
+function snapToNearestEndpoint(pt, edges, tolerance) {
+  let best = pt;
+  let bestDist = tolerance;
+  for (const e of edges) {
+    const candidates = [e.points[0], e.points[e.points.length - 1]];
+    for (const cand of candidates) {
+      const d = Math.hypot(cand[0] - pt[0], cand[1] - pt[1]);
+      if (d < bestDist) {
+        bestDist = d;
+        best = cand;
+      }
+    }
+  }
+  return best;
+}
+
 function extractWallGraph(canvas, image) {
-  const { skeleton, cols, rows } = buildSkeleton(canvas, image);
-  const { edges: rawEdges, nodes: junctionNodes } = traceSkeletonGraph(
-    skeleton,
+  const {
+    wallData,
+    windows: rawWindows,
+    cols,
+    rows,
+  } = segmentMasks(canvas, image);
+
+  const { edges: rawWallEdges, nodes: wallJunctionNodes } = skeletonizeAndTrace(
+    wallData,
     cols,
     rows,
   );
 
   const finalEdges = [];
   const cornerNodeSet = new Set();
-  for (const raw of rawEdges) {
+  for (const raw of rawWallEdges) {
     const simplified = {
       points: simplifyChain(raw.points, raw.closed),
       closed: raw.closed,
@@ -364,35 +557,53 @@ function extractWallGraph(canvas, image) {
   }
 
   const cornerNodes = [...cornerNodeSet].map((s) => s.split(",").map(Number));
-  const allNodes = [...junctionNodes, ...cornerNodes];
+  const allNodes = [...wallJunctionNodes, ...cornerNodes];
 
   const border = PAD + 5;
+  const inBounds = ([nx, ny]) =>
+    nx >= border && nx < cols - border && ny >= border && ny < rows - border;
+
+  const windows = rawWindows.filter(
+    (win) => inBounds(win.start) && inBounds(win.end),
+  );
+
+  // Strip the thin ring-stub edges that trace around each window hole — these
+  // are a skeletonization artifact of the hole, not real wall.
+  const wallEdgesOnly = finalEdges.filter(
+    (edge) => !edgeMostlyInsideWindows(edge, windows, WINDOW_EXCLUDE_PAD),
+  );
+
+  // Re-bridge across each window with a single straight edge so the wall path
+  // stays unbroken (solid wall gets built there; the opening itself is cut in
+  // Viewer3D at window height, not by leaving a full floor-to-ceiling gap
+  // here). Snap bridge endpoints onto real wall endpoints nearby so the joint
+  // lines up exactly instead of leaving a hairline seam.
+  const bridgeEdges = windows.map((win) => ({
+    points: [
+      snapToNearestEndpoint(win.start, wallEdgesOnly, WINDOW_SNAP_TOLERANCE),
+      snapToNearestEndpoint(win.end, wallEdgesOnly, WINDOW_SNAP_TOLERANCE),
+    ],
+    closed: false,
+  }));
+
+  const combinedEdges = [...wallEdgesOnly, ...bridgeEdges];
+
   const validNodeSet = new Set(
     allNodes
+      .filter(inBounds)
       .filter(
-        ([nx, ny]) =>
-          nx >= border &&
-          nx < cols - border &&
-          ny >= border &&
-          ny < rows - border,
+        (n) => !windows.some((win) => pointInWindowBox(n, win, WINDOW_EXCLUDE_PAD)),
       )
       .map(([nx, ny]) => `${nx},${ny}`),
   );
-  const filteredEdges = finalEdges.filter((e) =>
-    e.points.every(
-      ([px, py]) =>
-        px >= border &&
-        px < cols - border &&
-        py >= border &&
-        py < rows - border,
-    ),
-  );
+  const filteredEdges = combinedEdges.filter((e) => e.points.every(inBounds));
   const filteredNodes = allNodes.filter(([nx, ny]) =>
     validNodeSet.has(`${nx},${ny}`),
   );
 
-  return { edges: filteredEdges, nodes: filteredNodes };
+  return { edges: filteredEdges, nodes: filteredNodes, windows };
 }
+
 
 /* ---------- Styles ---------- */
 const CANVAS_STYLE = {
@@ -431,6 +642,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
 
   const [edges, setEdges] = useState(null);
   const [nodes, setNodes] = useState(null);
+  const [windows, setWindows] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState("2d");
   const [pixelsPerMeter, setPixelsPerMeter] = useState(50);
@@ -445,10 +657,11 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
     try {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const { edges: detectedEdges, nodes: detectedNodes } = extractWallGraph(
-        canvas,
-        img,
-      );
+      const {
+        edges: detectedEdges,
+        nodes: detectedNodes,
+        windows: detectedWindows,
+      } = extractWallGraph(canvas, img);
 
       // Draw overlay on canvas — must use the same scale/offset as buildSkeleton
       const ctx = canvas.getContext("2d");
@@ -482,8 +695,18 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         ctx.fill();
       }
 
+      ctx.strokeStyle = "#00c853";
+      ctx.lineWidth = 4;
+      for (const win of detectedWindows) {
+        ctx.beginPath();
+        ctx.moveTo(win.start[0], win.start[1]);
+        ctx.lineTo(win.end[0], win.end[1]);
+        ctx.stroke();
+      }
+
       setEdges(detectedEdges);
       setNodes(detectedNodes);
+      setWindows(detectedWindows);
     } catch (err) {
       console.error("Floorplan detection failed:", err);
       setError(err.message || "Detection failed");
@@ -573,6 +796,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
       {view === "3d" && edges && (
         <Viewer3D
           edges={edges}
+          windows={windows}
           pixelsPerMeter={pixelsPerMeter}
           wallHeightMeters={wallHeight}
           wallThicknessMeters={wallThickness}
