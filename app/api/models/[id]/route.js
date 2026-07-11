@@ -45,6 +45,18 @@ export async function PUT(request, { params }) {
   if (!user) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
 
   const id = parseInt(params.id, 10);
+  if (isNaN(id)) {
+    return NextResponse.json({ error: "Invalid model ID." }, { status: 400 });
+  }
+
+  // Check ownership.
+  const row = db.prepare("SELECT user_id FROM models WHERE id = ?").get(id);
+  if (!row) {
+    return NextResponse.json({ error: "Model not found." }, { status: 404 });
+  }
+  if (row.user_id !== user.id) {
+    return NextResponse.json({ error: "Not authorized to modify this model." }, { status: 403 });
+  }
 
   let body;
   try {

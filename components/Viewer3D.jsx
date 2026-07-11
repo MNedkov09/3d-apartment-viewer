@@ -22,51 +22,64 @@ import { buildWallMeshes } from "./wallGeometry";
 // Register the GLTF loader once at module load time (global Babylon.js singleton).
 SceneLoader.RegisterPlugin(new GLTFFileLoader());
 
-// Default models to show when the user has no uploaded models yet.
-const DEFAULT_MODELS = [
-  {
-    url: "/models/placeholder.glb",
-    position: [0, 0, 0],
-    scaling: [1, 1, 1],
-  },
-  {
-    url: "/models/placeholder_copy.glb",
-    position: [2, 0, 2],
-    scaling: [1, 1, 1],
-  },
-  {
-    url: "/models/placeholder_copy_2.glb",
-    position: [-2, 0, -2],
-    scaling: [1, 1, 1],
-  },
-];
+// SceneLoader.Append shows Babylon's default black-screen-with-logo loading
+// UI automatically while an asset loads. For small GLTF files this loads
+// fast enough that all you see is a jarring flash. This flag turns that
+// automatic behavior off entirely — you can add your own loading indicator
+// separately if you want one, but this stops the flash.
+SceneLoader.ShowLoadingScreen = false;
 
 /**
- * Fetch models from the API for the current user.
- * Returns an array of { url, position, scaling, name } objects, or null on error.
+ * Cast a ray from the camera through a given canvas pixel and intersect it
+ * with the horizontal ground plane at height `flrY`. Used for BOTH placing
+ * a new model (ray through canvas center) and dragging an existing one
+ * (ray through the cursor) — same math, different pixel coordinates.
+ */
+function rayGroundIntersect(scene, cam, canvas, flrY, ptrX, ptrY) {
+  const ray = scene.createPickingRay(
+    ptrX ?? canvas.clientWidth / 2,
+    ptrY ?? canvas.clientHeight / 2,
+    Matrix.Identity(),
+    cam,
+  );
+  const plane = Plane.FromPositionAndNormal(
+    new Vector3(0, flrY, 0),
+    new Vector3(0, 1, 0),
+  );
+  const distance = ray.intersectsPlane(plane);
+  if (distance === null || distance < 0) return null;
+  return ray.origin.add(ray.direction.scale(distance));
+}
+
+/**
+ * Fetch model metadata from the API for the current user.
+ * Returns list info only — does NOT load models into the scene.
  */
 async function fetchUserModels() {
   try {
     const res = await fetch("/api/models?limit=100");
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const data = await res.json();
     return (data.models || []).map((m) => ({
-      url: m.file_path,
-      position: [0, 0, 0],
-      scaling: [1, 1, 1],
       name: m.name,
-      thumbnail: m.thumbnail_path,
+      url: m.file_path,
     }));
   } catch {
-    return null;
+    return [];
   }
 }
 
 /**
- * Sidebar panel listing loaded models. Click a model to start dragging it
- * in the 3D scene; its current position updates live while dragging.
+ * Sidebar panel listing available models from the API and placed meshes in the scene.
+ * Clicking an available model places it at the camera's ground intersection; clicking a placed
+ * mesh starts dragging it around.
  */
-function ModelPanel({ models, draggedModel, onModelClick }) {
+function ModelPanel({
+  availableModels,
+  placedModels,
+  draggedModel,
+  onPlaceModel,
+}) {
   return (
     <div
       style={{
@@ -92,70 +105,125 @@ function ModelPanel({ models, draggedModel, onModelClick }) {
           marginBottom: 2,
         }}
       >
-        Models
+        Available
       </div>
-      {models.length === 0 && (
+      {availableModels.length === 0 && (
         <div style={{ color: "rgba(255,255,255,0.4)", fontStyle: "italic" }}>
-          Loading...
+          No models yet.
         </div>
       )}
-      {models.map((m, i) => {
-        const isDragging = draggedModel && draggedModel.mesh === m.mesh;
-        return (
-          <div
-            key={i}
-            onClick={() => onModelClick(m)}
+      {availableModels.map((m, i) => (
+        <div
+          key={i}
+          onClick={() => onPlaceModel(m)}
+          style={{
+            padding: "6px 8px",
+            borderRadius: 4,
+            cursor: "pointer",
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid transparent",
+            transition: "background 0.1s",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+          }}
+        >
+          <span
             style={{
-              padding: "6px 8px",
-              borderRadius: 4,
-              cursor: "pointer",
-              background: isDragging
-                ? "rgba(255,255,255,0.15)"
-                : "rgba(255,255,255,0.05)",
-              border: isDragging
-                ? "1px solid rgba(255,255,255,0.3)"
-                : "1px solid transparent",
-              transition: "background 0.1s",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-            onMouseEnter={(e) => {
-              if (!isDragging)
-                e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-            }}
-            onMouseLeave={(e) => {
-              if (!isDragging)
-                e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            <span
-              style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {m.name}
-            </span>
-            {isDragging && (
-              <span
+            {m.name}
+          </span>
+          <span
+            style={{
+              fontSize: 9,
+              background: "rgba(255,255,255,0.15)",
+              padding: "1px 5px",
+              borderRadius: 3,
+              flexShrink: 0,
+              marginLeft: 6,
+            }}
+          >
+            +
+          </span>
+        </div>
+      ))}
+
+      {placedModels.length > 0 && (
+        <>
+          <div
+            style={{
+              marginTop: 8,
+              fontWeight: 600,
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "rgba(255,255,255,0.5)",
+            }}
+          >
+            In Scene
+          </div>
+          {placedModels.map((m, i) => {
+            const isDragging = draggedModel && draggedModel.mesh === m.mesh;
+            return (
+              <div
+                key={`placed-${i}`}
                 style={{
-                  fontSize: 9,
-                  background: "rgba(255,255,255,0.2)",
-                  padding: "1px 5px",
-                  borderRadius: 3,
-                  flexShrink: 0,
-                  marginLeft: 6,
+                  padding: "6px 8px",
+                  borderRadius: 4,
+                  background: isDragging
+                    ? "rgba(255,255,255,0.15)"
+                    : "rgba(255,255,255,0.05)",
+                  border: isDragging
+                    ? "1px solid rgba(255,255,255,0.3)"
+                    : "1px solid transparent",
+                  transition: "background 0.1s",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  color: "rgba(255,255,255,0.7)",
+                  fontStyle: "italic",
                 }}
               >
-                Drag
-              </span>
-            )}
-          </div>
-        );
-      })}
-      {models.length > 0 && (
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {m.name}
+                </span>
+                {isDragging && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      background: "rgba(255,255,255,0.2)",
+                      padding: "1px 5px",
+                      borderRadius: 3,
+                      flexShrink: 0,
+                      marginLeft: 6,
+                    }}
+                  >
+                    Drag
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {(availableModels.length > 0 || placedModels.length > 0) && (
         <div
           style={{
             marginTop: "auto",
@@ -166,9 +234,9 @@ function ModelPanel({ models, draggedModel, onModelClick }) {
             lineHeight: 1.5,
           }}
         >
-          Click a model or drag it
+          Click + to place a model.
           <br />
-          directly in the scene.
+          Drag in the scene or reposition later.
         </div>
       )}
     </div>
@@ -193,90 +261,37 @@ export default function Viewer3D({
   const draggedMeshRef = useRef(null);
   const dragOffsetRef = useRef(new Vector3());
   const dragStartPosRef = useRef(new Vector3());
-  // Unified drag state — used by BOTH the sidebar click (onModelClick) and
-  // the in-scene pointer drag (onPointerDown/Move/Up), so a drag started
-  // from either entry point behaves identically and cleans up correctly.
   const isDraggingRef = useRef(false);
+  // Maps EVERY mesh in a placed model's hierarchy (root + all descendants)
+  // to { entry, root }. Registering only the root used to be the bug: a
+  // GLTF import's root is often an invisible transform node with zero
+  // vertices, so clicking the visible furniture actually hits a CHILD
+  // mesh that was never in this map — scene.pick's predicate failed for
+  // it every time, so dragging silently never started.
   const meshToModelRef = useRef(new Map());
   const floorYRef = useRef(-0.05);
   const cameraRef = useRef(null);
 
-  // Track loaded models for the sidebar panel.
-  const [loadedModels, setLoadedModels] = useState([]);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [placedModels, setPlacedModels] = useState([]);
   const [draggedModel, setDraggedModel] = useState(null);
 
-  // Fetch user models on mount and merge with defaults.
   useEffect(() => {
     let cancelled = false;
     fetchUserModels().then((apiModels) => {
       if (cancelled) return;
-      const modelsToLoad = apiModels && apiModels.length > 0 ? apiModels : DEFAULT_MODELS;
-      setLoadedModels(modelsToLoad);
+      setAvailableModels(apiModels);
     });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Click a model in the panel to start dragging it in the scene.
-  const onModelClick = useCallback((modelEntry) => {
-    if (!modelEntry.mesh) return;
-    const mesh = modelEntry.mesh;
-    const cam = cameraRef.current;
-    const scene = sceneRef.current;
-    if (!cam || !scene) return;
-    const flrY = floorYRef.current;
-
-    // Disable camera so it doesn't fight the drag.  Use detachControl() to
-    // fully remove Babylon's internal event listeners (not just isActive),
-    // which is required for reliable re-attachment after a sidebar-initiated
-    // drag that never calls pointerdown on the canvas.
-    cam.detachControl();
-
-    // Compute camera→ground intersection (canvas center, since there's no
-    // actual pointer event from the sidebar click).
-    const ray = scene.createPickingRay(
-      canvasRef.current.clientWidth / 2,
-      canvasRef.current.clientHeight / 2,
-      Matrix.Identity(),
-      cam,
-    );
-    const dir = ray?.direction;
-    let hitPoint = cam.position.clone();
-    if (dir && Math.abs(dir.y) > 1e-6) {
-      const t = (flrY - cam.position.y) / dir.y;
-      if (t >= 0) {
-        hitPoint = new Vector3(
-          cam.position.x + dir.x * t,
-          flrY,
-          cam.position.z + dir.z * t,
-        );
-      }
-    }
-
-    draggedMeshRef.current = mesh;
-    dragOffsetRef.current.copyFrom(hitPoint);
-    dragStartPosRef.current.copyFrom(mesh.position);
-    isDraggingRef.current = true;
-    setDraggedModel(modelEntry);
-  }, []);
-
-  const handleKeyDown = useCallback((e) => {
-    keysRef.current.add(e.key.toLowerCase());
-  }, []);
-  const handleKeyUp = useCallback((e) => {
-    keysRef.current.delete(e.key.toLowerCase());
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-    };
-  }, [handleKeyDown, handleKeyUp]);
-
+  // NOTE: `bounds` must be declared before anything that reads it (the
+  // spawnX/spawnZ state below, and the render-lifecycle effect further
+  // down). `const` isn't hoisted the way `var` is, so referencing
+  // `bounds.cx` above its own declaration throws "Cannot access 'bounds'
+  // before initialization" — that was the actual crash you hit.
   const bounds = useMemo(() => {
     if (!edges || edges.length === 0) {
       return { cx: 0, cz: 0, w: 10, d: 10 };
@@ -302,6 +317,188 @@ export default function Viewer3D({
     };
   }, [edges, pixelsPerMeter]);
 
+  const handleKeyDown = useCallback((e) => {
+    keysRef.current.add(e.key.toLowerCase());
+  }, []);
+  const handleKeyUp = useCallback((e) => {
+    keysRef.current.delete(e.key.toLowerCase());
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [handleKeyDown, handleKeyUp]);
+
+  const MIN_MODEL_SPACING = 0.4;
+
+  function isSpawnBlocked(sx, sz) {
+    if (edges && edges.length > 0) {
+      for (const edge of edges) {
+        for (let i = 0; i < edge.points.length - 1; i++) {
+          const [ax, ay] = edge.points[i];
+          const [bx, by] = edge.points[i + 1];
+          const scale = 1 / pixelsPerMeter;
+          const waX = ax * scale,
+            waZ = ay * scale;
+          const wbX = bx * scale,
+            wbZ = by * scale;
+          const dx = wbX - waX,
+            dz = wbZ - waZ;
+          const lenSq = dx * dx + dz * dz;
+          let t = lenSq > 0 ? ((sx - waX) * dx + (sz - waZ) * dz) / lenSq : 0;
+          t = Math.max(0, Math.min(1, t));
+          const closestX = waX + t * dx,
+            closestZ = waZ + t * dz;
+          const distX = sx - closestX,
+            distZ = sz - closestZ;
+          if (distX * distX + distZ * distZ < 0.25) return true;
+        }
+      }
+    }
+    for (const m of placedModels) {
+      const dx = sx - m.position[0],
+        dz = sz - m.position[2];
+      if (dx * dx + dz * dz < (MIN_MODEL_SPACING * 2) ** 2) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Load a single GLTF model into the scene at the given ground position.
+   *
+   * FIX: previously this picked "the first mesh in the scene that isn't
+   * the floor or a wall" — which breaks two ways:
+   *   1. GLTF imports usually add an invisible root transform node
+   *      (0 vertices) as part of the hierarchy. If THAT gets treated as
+   *      "the model," it's literally unclickable — there's no geometry
+   *      for scene.pick to hit, so drag can never start.
+   *   2. Once more than one model is placed, `scene.meshes` contains
+   *      every mesh in the whole scene, so "first non-floor/wall mesh"
+   *      can grab an OLD model instead of the one you just loaded.
+   *
+   * Fix: snapshot the mesh count before loading, so we know exactly
+   * which meshes THIS load call added. Find the true root (parent ===
+   * null) among those new meshes to move as one unit, but register
+   * EVERY mesh in that hierarchy in meshToModelRef — so clicking any
+   * visible child correctly resolves back to "drag the root."
+   */
+  const placeModelInScene = useCallback(
+    (apiModel) => {
+      const cam = cameraRef.current;
+      const scene = sceneRef.current;
+      const canvas = canvasRef.current;
+      if (!scene || !cam || !canvas) return;
+
+      // Cast a ray from the camera through the CENTER of the canvas and
+      // intersect it with the ground plane — this is what "where the
+      // camera is looking" actually means. The previous version used
+      // `cam.target`, which is just the ArcRotateCamera's orbit pivot
+      // point — it only happens to match the true screen-center ground
+      // intersection in specific cases (e.g. looking straight down), and
+      // drifts as soon as the camera's pitch/angle differs, or once WASD
+      // has moved the target around. Reusing rayGroundIntersect here
+      // means placement and dragging now share the exact same, correct
+      // ray math.
+      const centerHit = rayGroundIntersect(
+        scene,
+        cam,
+        canvas,
+        floorYRef.current,
+        canvas.clientWidth / 2,
+        canvas.clientHeight / 2,
+      );
+      if (!centerHit) {
+        console.warn(
+          "Placement failed: camera isn't looking at the ground (ray never hit the floor plane). Try tilting the camera down.",
+        );
+        return;
+      }
+
+      let spawnPoint = centerHit;
+
+      // If the exact center-of-view point is blocked (on a wall, or
+      // stacked on an existing model), nudge outward along the camera's
+      // right vector in a few small steps rather than failing outright —
+      // repeated clicks with the camera in the same position would
+      // otherwise always target the identical point and always collide.
+      if (isSpawnBlocked(spawnPoint.x, spawnPoint.z)) {
+        const right = cam.getDirection(Vector3.Right());
+        right.y = 0;
+        right.normalize();
+        let found = false;
+        for (let step = 1; step <= 5; step++) {
+          const candidate = centerHit.add(right.scale(step * 0.6));
+          if (!isSpawnBlocked(candidate.x, candidate.z)) {
+            spawnPoint = candidate;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          console.warn(
+            "Placement blocked: no clear spot near the camera's view center. Try orbiting to a more open part of the room.",
+          );
+          return;
+        }
+      }
+
+      const url = apiModel.url;
+      const name = url
+        .split("/")
+        .pop()
+        .replace(/\.[^.]+$/, "");
+      const meshCountBefore = scene.meshes.length;
+
+      SceneLoader.Append(
+        "",
+        url,
+        scene,
+        () => {
+          const newMeshes = scene.meshes.slice(meshCountBefore);
+          if (newMeshes.length === 0) return;
+
+          const root = newMeshes.find((m) => m.parent === null) || newMeshes[0];
+
+          for (const m of newMeshes) {
+            if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
+              const mat = new PBRMaterial(`${name}_mat_${m.uniqueId}`, scene);
+              mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
+              mat.metallic = 0.1;
+              mat.roughness = 0.7;
+              m.material = mat;
+            }
+            m.castShadow = true;
+            m.receiveShadow = true;
+          }
+
+          root.position = spawnPoint;
+
+          const entry = {
+            name,
+            position: [spawnPoint.x - bounds.cx, 0, spawnPoint.z - bounds.cz],
+            scaling: [1, 1, 1],
+            url,
+          };
+
+          for (const m of newMeshes) {
+            meshToModelRef.current.set(m, { entry, root });
+          }
+
+          setPlacedModels((prev) => [...prev, { ...entry, mesh: root }]);
+        },
+        undefined,
+        () => {
+          // GLTF loader warnings can fire alongside success — ignore them.
+        },
+      );
+    },
+    [bounds, placedModels],
+  );
+
   const cameraDistance = useMemo(() => {
     if (!edges || edges.length === 0) return 10;
     let maxExtent = 1;
@@ -318,22 +515,14 @@ export default function Viewer3D({
     return Math.max(maxExtent * 1.8, 10);
   }, [edges, pixelsPerMeter]);
 
-  // ---- Scene lifecycle: only depends on `edges` ----
-  // When edges change the scene is rebuilt (floor/walls resize).
-  // Model loading is handled separately by the "load models" effect below.
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
-    // Guard against stale async callbacks (SceneLoader.Append) from previous
-    // effect runs.  When edges/bounds change the effect re-runs, disposes the
-    // old scene, and the pending GLTF callback would otherwise operate on a
-    // disposed scene → "Error in onSuccess callback".
     if (sceneRef.current) {
       wallMeshesRef.current.forEach((m) => m.dispose());
       sceneRef.current.dispose();
       engineRef.current?.dispose();
     }
-    let disposed = false;
 
     const engine = new Engine(canvasRef.current, true, {
       preserveDrawingBuffer: false,
@@ -452,30 +641,8 @@ export default function Viewer3D({
     const onContextMenu = (e) => e.preventDefault();
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
 
-    // ---- Drag-and-drop for model meshes ----
-    // Both entry points (sidebar click via onModelClick, and direct scene
-    // click via onPointerDown below) share isDraggingRef / draggedMeshRef /
-    // dragOffsetRef, so a drag started either way is tracked identically
-    // and always gets cleaned up by onPointerUp.
-
-    // Intersect a camera ray (from canvas pixel) with the ground plane Y=flrY.
-    // Returns the 3D point on the ground, or null if the ray is parallel/away.
-
-    function rayGroundIntersect(cam, flrY, ptrX, ptrY) {
-      const ray = scene.createPickingRay(
-        ptrX ?? canvasRef.current.clientWidth / 2,
-        ptrY ?? canvasRef.current.clientHeight / 2,
-        Matrix.Identity(),
-        cam,
-      );
-      const plane = Plane.FromPositionAndNormal(
-        new Vector3(0, flrY, 0),
-        new Vector3(0, 1, 0),
-      );
-      const distance = ray.intersectsPlane(plane);
-      if (distance === null || distance < 0) return null;
-      return ray.origin.add(ray.direction.scale(distance));
-    }
+    // (rayGroundIntersect is now a module-level helper, shared with
+    // placeModelInScene — see top of file)
 
     const onPointerDown = (e) => {
       if (e.button !== 0) return;
@@ -483,23 +650,31 @@ export default function Viewer3D({
       const ptrX = e.clientX - rect.left;
       const ptrY = e.clientY - rect.top;
 
-      // Pick the mesh under the cursor.
       const hit = scene.pick(ptrX, ptrY, (mesh) =>
         meshToModelRef.current.has(mesh),
       );
       if (!hit.hit) return;
       const picked = hit.pickedMesh;
       if (!picked) return;
-      const modelEntry = meshToModelRef.current.get(picked);
-      if (!modelEntry) return;
+      const mapping = meshToModelRef.current.get(picked);
+      if (!mapping) return;
 
-      // Disable camera so Babylon can't process pointer events (orbit/zoom)
-      // during drag — isActive alone is insufficient for left-drag orbit.
+      // Drag the ROOT, not whatever child mesh was actually clicked —
+      // moving the root cascades the whole hierarchy, and it's also
+      // guaranteed to be the same object as what we stored in
+      // placedModels' `mesh` field for the sidebar's isDragging check.
+      const root = mapping.root;
+
+      // detachControl actually disables camera input; the previous
+      // `camera.pointerInputEnabled = false` was not a real Babylon.js
+      // property, so it silently did nothing — the camera kept orbiting
+      // underneath the drag.
       camera.detachControl();
 
-      // Cast ray from camera through cursor onto ground plane to get initial hit.
       const hitPoint = rayGroundIntersect(
+        scene,
         camera,
+        canvasRef.current,
         floorYRef.current,
         ptrX,
         ptrY,
@@ -510,10 +685,10 @@ export default function Viewer3D({
       }
 
       isDraggingRef.current = true;
-      draggedMeshRef.current = picked;
-      dragOffsetRef.current.copyFrom(hitPoint); // now stores the START hit point
-      dragStartPosRef.current.copyFrom(picked.position); // and the START mesh position
-      setDraggedModel(modelEntry);
+      draggedMeshRef.current = root;
+      dragOffsetRef.current.copyFrom(hitPoint);
+      dragStartPosRef.current.copyFrom(root.position);
+      setDraggedModel(mapping.entry);
       canvasRef.current.style.cursor = "grabbing";
     };
 
@@ -527,30 +702,30 @@ export default function Viewer3D({
       const ptrY = e.clientY - rect.top;
 
       const hitPoint = rayGroundIntersect(
+        scene,
         camera,
+        canvasRef.current,
         floorYRef.current,
         ptrX,
         ptrY,
       );
       if (!hitPoint) return;
 
-      // Snap Y to floor level.
       const floorY = floorYRef.current;
       const deltaX = hitPoint.x - dragOffsetRef.current.x;
       const deltaZ = hitPoint.z - dragOffsetRef.current.z;
 
       mesh.position.set(
-        dragStartPosRef.current.x - deltaX,
+        dragStartPosRef.current.x + deltaX,
         floorY,
-        dragStartPosRef.current.z - deltaZ,
+        dragStartPosRef.current.z + deltaZ,
       );
 
-      // Update the model entry's position via ref (no React state update).
-      const entry = meshToModelRef.current.get(mesh);
-      if (entry) {
-        entry.position[0] = mesh.position.x - bounds.cx;
-        entry.position[1] = 0; // snapped to floor
-        entry.position[2] = mesh.position.z - bounds.cz;
+      const mapping = meshToModelRef.current.get(mesh);
+      if (mapping) {
+        mapping.entry.position[0] = mesh.position.x - bounds.cx;
+        mapping.entry.position[1] = 0;
+        mapping.entry.position[2] = mesh.position.z - bounds.cz;
       }
     };
 
@@ -558,26 +733,18 @@ export default function Viewer3D({
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
 
-      // Always re-enable camera interaction, regardless of which path ended
-      // the drag (sidebar click vs. in-scene pointerdown).  The sidebar path
-      // never calls detachControl() before dragging — we use isActive=false
-      // there — so this is essential for unlocking the camera after a drop.
       const cam = cameraRef.current;
       if (cam) {
-        cam.isActive = true;
-        if (!cam.inputs.attachedToElement) {
-          cam.attachControl(canvasRef.current, true);
-        }
+        cam.attachControl(canvasRef.current, true);
       }
 
-      // Sync final position into the model entry.
       const mesh = draggedMeshRef.current;
       if (mesh) {
-        const entry = meshToModelRef.current.get(mesh);
-        if (entry) {
-          entry.position[0] = mesh.position.x - bounds.cx;
-          entry.position[1] = 0;
-          entry.position[2] = mesh.position.z - bounds.cz;
+        const mapping = meshToModelRef.current.get(mesh);
+        if (mapping) {
+          mapping.entry.position[0] = mesh.position.x - bounds.cx;
+          mapping.entry.position[1] = 0;
+          mapping.entry.position[2] = mesh.position.z - bounds.cz;
         }
         draggedMeshRef.current = null;
         setDraggedModel(null);
@@ -594,7 +761,6 @@ export default function Viewer3D({
 
     engine.runRenderLoop(() => {
       const keys = keysRef.current;
-      const target = camera.target;
       _forward.copyFrom(camera.getDirection(Vector3.Forward()));
       _forward.y = 0;
       _forward.normalize();
@@ -618,7 +784,6 @@ export default function Viewer3D({
     });
 
     return () => {
-      disposed = true;
       canvasRef.current?.removeEventListener("contextmenu", onContextMenu);
       canvasRef.current?.ownerDocument?.removeEventListener("wheel", onWheel);
       canvasRef.current?.removeEventListener("pointerdown", onPointerDown);
@@ -653,83 +818,6 @@ export default function Viewer3D({
     wallThicknessMeters,
   ]);
 
-  // ---- Load models: independent of scene lifecycle ----
-  // Fetches models from the API (or falls back to defaults) and loads them
-  // into the existing scene. Runs on mount and whenever the model list changes.
-  useEffect(() => {
-    if (!sceneRef.current) return;
-
-    const modelsToLoad = loadedModels.length > 0 ? loadedModels : DEFAULT_MODELS;
-    const scene = sceneRef.current;
-    let disposed = false;
-
-    const modelMeshes = [];
-
-    for (const { url, position, scaling } of modelsToLoad) {
-      const name = url.split("/").pop().replace(/\.[^.]+$/, "");
-      const prevMeshCount = scene.meshes.length;
-
-      SceneLoader.Append(
-        "",
-        url,
-        scene,
-        () => {
-          if (disposed) return;
-          const allMeshes = scene.meshes;
-          const newMeshes = allMeshes.slice(prevMeshCount);
-          const floor = scene.getMeshByName("floor");
-          const modelMeshesInRange = newMeshes.filter(
-            (m) => m !== floor && !wallMeshesRef.current.includes(m),
-          );
-          if (modelMeshesInRange.length === 0) {
-            console.warn(`GLTF loaded but produced no visible geometry: ${url}`);
-            return;
-          }
-          modelMeshesInRange.forEach((m) => {
-            if (!m || !m.material) {
-              const mat = new PBRMaterial(`${m?.name || "unknown"}_mat`, scene);
-              mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
-              mat.metallic = 0.1;
-              mat.roughness = 0.7;
-              if (m) m.material = mat;
-            }
-            if (m) {
-              m.position = new Vector3(
-                bounds.cx + position[0],
-                position[1],
-                bounds.cz + position[2],
-              );
-              m.scaling = new Vector3(scaling[0], scaling[1], scaling[2]);
-              m.castShadow = true;
-              m.receiveShadow = true;
-              modelMeshes.push(m);
-              meshToModelRef.current.set(m, {
-                name,
-                position: [...position],
-                scaling: [...scaling],
-                url,
-              });
-            }
-          });
-          setLoadedModels(
-            [...meshToModelRef.current.entries()].map(([mesh, entry]) => ({
-              ...entry,
-              mesh,
-            })),
-          );
-        },
-        undefined,
-        (_scene, message) =>
-          console.error(`GLTF load failed: ${url}: ${message}`),
-      );
-    }
-    // Dispose model meshes on unload / re-fetch
-    return () => {
-      disposed = true;
-      modelMeshes.forEach((m) => m.dispose());
-    };
-  }, [loadedModels, bounds]);
-
   useEffect(() => {
     const handleResize = () => {
       if (engineRef.current) {
@@ -750,7 +838,6 @@ export default function Viewer3D({
         cursor: draggedModel ? "grabbing" : "crosshair",
       }}
     >
-      {/* 3D canvas area */}
       <div
         style={{
           flex: 1,
@@ -799,11 +886,11 @@ export default function Viewer3D({
           Scroll to zoom
         </div>
       </div>
-      {/* Model sidebar */}
       <ModelPanel
-        models={loadedModels}
+        availableModels={availableModels}
+        placedModels={placedModels}
         draggedModel={draggedModel}
-        onModelClick={onModelClick}
+        onPlaceModel={placeModelInScene}
       />
     </div>
   );
