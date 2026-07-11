@@ -4,12 +4,20 @@ import fs from "fs";
 import crypto from "crypto";
 import db from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
-import { extractPolygonCount, generateModelThumbnailSvg } from "@/lib/model-utils";
+import {
+  extractPolygonCount,
+  generateModelThumbnailSvg,
+} from "@/lib/model-utils";
 
 export const runtime = "nodejs";
 
 const MODELS_DIR = path.join(process.cwd(), "public", "uploads", "models");
-const THUMBNAILS_DIR = path.join(process.cwd(), "public", "uploads", "thumbnails");
+const THUMBNAILS_DIR = path.join(
+  process.cwd(),
+  "public",
+  "uploads",
+  "thumbnails",
+);
 
 // GET /api/models/:id — get single model metadata (owner-only).
 export async function GET(request, { params }) {
@@ -23,17 +31,16 @@ export async function GET(request, { params }) {
     return NextResponse.json({ error: "Invalid model ID." }, { status: 400 });
   }
 
-  const row = db
-    .prepare(
-      `SELECT * FROM models WHERE id = ?`
-    )
-    .get(id);
+  const row = db.prepare(`SELECT * FROM models WHERE id = ?`).get(id);
 
   if (!row) {
     return NextResponse.json({ error: "Model not found." }, { status: 404 });
   }
   if (row.user_id !== user.id) {
-    return NextResponse.json({ error: "Not authorized to view this model." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Not authorized to view this model." },
+      { status: 403 },
+    );
   }
 
   return NextResponse.json({ model: row });
@@ -42,7 +49,8 @@ export async function GET(request, { params }) {
 // PUT /api/models/:id — update name/description/category/tags (owner only).
 export async function PUT(request, { params }) {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
+  if (!user)
+    return NextResponse.json({ error: "Not logged in." }, { status: 401 });
 
   const id = parseInt(params.id, 10);
   if (isNaN(id)) {
@@ -55,7 +63,10 @@ export async function PUT(request, { params }) {
     return NextResponse.json({ error: "Model not found." }, { status: 404 });
   }
   if (row.user_id !== user.id) {
-    return NextResponse.json({ error: "Not authorized to modify this model." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Not authorized to modify this model." },
+      { status: 403 },
+    );
   }
 
   let body;
@@ -68,24 +79,43 @@ export async function PUT(request, { params }) {
   const { name, description, category, tags } = body;
 
   // Validate inputs.
-  if (name !== undefined && (!name || typeof name !== "string" || name.trim().length === 0)) {
-    return NextResponse.json({ error: "Name must be a non-empty string." }, { status: 400 });
+  if (
+    name !== undefined &&
+    (!name || typeof name !== "string" || name.trim().length === 0)
+  ) {
+    return NextResponse.json(
+      { error: "Name must be a non-empty string." },
+      { status: 400 },
+    );
   }
   if (description !== undefined && typeof description !== "string") {
-    return NextResponse.json({ error: "Description must be a string." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Description must be a string." },
+      { status: 400 },
+    );
   }
   if (category !== undefined) {
-    const cats = ["uncategorized", "furniture", "lighting", "structures", "decorations", "outdoor"];
+    const cats = [
+      "uncategorized",
+      "furniture",
+      "lighting",
+      "structures",
+      "decorations",
+      "outdoor",
+    ];
     if (!cats.includes(category)) {
       return NextResponse.json(
         { error: `Category must be one of: ${cats.join(", ")}.` },
-        { status: 400 }
+        { status: 400 },
       );
     }
   }
   if (tags !== undefined) {
     if (!Array.isArray(tags) || !tags.every((t) => typeof t === "string")) {
-      return NextResponse.json({ error: "Tags must be an array of strings." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Tags must be an array of strings." },
+        { status: 400 },
+      );
     }
   }
 
@@ -116,11 +146,11 @@ export async function PUT(request, { params }) {
   }
 
   params_arr.push(id);
-  db.prepare(`UPDATE models SET ${fields.join(", ")} WHERE id = ?`).run(...params_arr);
+  db.prepare(`UPDATE models SET ${fields.join(", ")} WHERE id = ?`).run(
+    ...params_arr,
+  );
 
-  const updated = db
-    .prepare("SELECT * FROM models WHERE id = ?")
-    .get(id);
+  const updated = db.prepare("SELECT * FROM models WHERE id = ?").get(id);
 
   return NextResponse.json({ model: updated });
 }
@@ -137,12 +167,19 @@ export async function DELETE(request, { params }) {
     return NextResponse.json({ error: "Invalid model ID." }, { status: 400 });
   }
 
-  const row = db.prepare("SELECT user_id, file_path, thumbnail_path FROM models WHERE id = ?").get(id);
+  const row = db
+    .prepare(
+      "SELECT user_id, file_path, thumbnail_path FROM models WHERE id = ?",
+    )
+    .get(id);
   if (!row) {
     return NextResponse.json({ error: "Model not found." }, { status: 404 });
   }
   if (row.user_id !== user.id) {
-    return NextResponse.json({ error: "Not authorized to delete this model." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Not authorized to delete this model." },
+      { status: 403 },
+    );
   }
 
   // Remove physical files.
@@ -175,18 +212,26 @@ export async function POST(request, { params }) {
   }
 
   // Check ownership.
-  const row = db.prepare("SELECT user_id, file_path, name FROM models WHERE id = ?").get(id);
+  const row = db
+    .prepare("SELECT user_id, file_path, name FROM models WHERE id = ?")
+    .get(id);
   if (!row) {
     return NextResponse.json({ error: "Model not found." }, { status: 404 });
   }
   if (row.user_id !== user.id) {
-    return NextResponse.json({ error: "Not authorized to modify this model." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Not authorized to modify this model." },
+      { status: 403 },
+    );
   }
 
   // Read the GLB file.
   const fullPath = path.join(process.cwd(), row.file_path);
   if (!fs.existsSync(fullPath)) {
-    return NextResponse.json({ error: "Model file not found on disk." }, { status: 404 });
+    return NextResponse.json(
+      { error: "Model file not found on disk." },
+      { status: 404 },
+    );
   }
   const buffer = fs.readFileSync(fullPath);
 
@@ -195,14 +240,21 @@ export async function POST(request, { params }) {
   const svg = generateModelThumbnailSvg(row.name, polygonCount);
 
   // Save new thumbnail.
-  if (!fs.existsSync(THUMBNAILS_DIR)) fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+  if (!fs.existsSync(THUMBNAILS_DIR))
+    fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
   const thumbName = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}.svg`;
   const thumbDiskPath = path.join(THUMBNAILS_DIR, thumbName);
   fs.writeFileSync(thumbDiskPath, svg);
 
   const publicThumbPath = `/uploads/thumbnails/${thumbName}`;
 
-  db.prepare("UPDATE models SET thumbnail_path = ? WHERE id = ?").run(publicThumbPath, id);
+  db.prepare("UPDATE models SET thumbnail_path = ? WHERE id = ?").run(
+    publicThumbPath,
+    id,
+  );
 
-  return NextResponse.json({ message: "Thumbnail regenerated.", thumbnail_path: publicThumbPath });
+  return NextResponse.json({
+    message: "Thumbnail regenerated.",
+    thumbnail_path: publicThumbPath,
+  });
 }

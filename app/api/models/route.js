@@ -4,20 +4,26 @@ import fs from "fs";
 import crypto from "crypto";
 import db from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
-import { validateModelFile, generateModelFilename, extractPolygonCount } from "@/lib/model-utils";
+import {
+  validateModelFile,
+  generateModelFilename,
+  extractPolygonCount,
+} from "@/lib/model-utils";
 
 export const runtime = "nodejs";
 
 const MODELS_DIR = path.join(process.cwd(), "public", "uploads", "models");
-const THUMBNAILS_DIR = path.join(process.cwd(), "public", "uploads", "thumbnails");
+const THUMBNAILS_DIR = path.join(
+  process.cwd(),
+  "public",
+  "uploads",
+  "thumbnails",
+);
 const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
 
-// GET /api/models -> list models for the logged-in user (with optional filters)
+// GET /api/models -> list models (public read, filtered by user_id only if logged in)
 export async function GET(request) {
   const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: "Not logged in." }, { status: 401 });
-  }
 
   const { searchParams } = new URL(request.url);
   const category = searchParams.get("category");
@@ -26,9 +32,15 @@ export async function GET(request) {
   const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 100);
   const offset = (page - 1) * limit;
 
-  // Build WHERE clause dynamically
-  const whereClauses = ["user_id = ?"];
-  const params = [user.id];
+  // Build WHERE clause dynamically — only filter by user_id if logged in.
+  // This lets anyone preview models without logging in; uploads still require auth.
+  const whereClauses = [];
+  const params = [];
+
+  if (user) {
+    whereClauses.push("user_id = ?");
+    params.push(user.id);
+  }
 
   if (category && category !== "all") {
     whereClauses.push("category = ?");
@@ -44,7 +56,9 @@ export async function GET(request) {
   const whereClause = whereClauses.join(" AND ");
 
   // Get total count for pagination
-  const countRow = db.prepare(`SELECT COUNT(*) as total FROM models WHERE ${whereClause}`).get(...params);
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as total FROM models WHERE ${whereClause}`)
+    .get(...params);
   const total = countRow.total;
   const totalPages = Math.ceil(total / limit);
 
@@ -55,7 +69,7 @@ export async function GET(request) {
          FROM models
         WHERE ${whereClause}
         ORDER BY created_at DESC
-        LIMIT ? OFFSET ?`
+        LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset);
 
@@ -74,7 +88,10 @@ export async function GET(request) {
 export async function POST(request) {
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ error: "Log in to upload a model." }, { status: 401 });
+    return NextResponse.json(
+      { error: "Log in to upload a model." },
+      { status: 401 },
+    );
   }
 
   let form;
@@ -87,23 +104,31 @@ export async function POST(request) {
   const file = form.get("file");
   const name = (form.get("name") || "").toString().trim();
   const description = (form.get("description") || "").toString().trim();
-  const category = (form.get("category") || "uncategorized").toString().trim() || "uncategorized";
+  const category =
+    (form.get("category") || "uncategorized").toString().trim() ||
+    "uncategorized";
 
   if (!file || typeof file === "string") {
-    return NextResponse.json({ error: "No file was attached." }, { status: 400 });
+    return NextResponse.json(
+      { error: "No file was attached." },
+      { status: 400 },
+    );
   }
   if (file.size === 0) {
     return NextResponse.json({ error: "The file is empty." }, { status: 400 });
   }
   if (file.size > MAX_SIZE) {
-    return NextResponse.json({ error: "File is larger than 50 MB." }, { status: 413 });
+    return NextResponse.json(
+      { error: "File is larger than 50 MB." },
+      { status: 413 },
+    );
   }
 
   const ext = path.extname(file.name).toLowerCase();
   if (![".glb", ".gltf"].includes(ext)) {
     return NextResponse.json(
       { error: "Unsupported file type. Use .glb or .gltf." },
-      { status: 415 }
+      { status: 415 },
     );
   }
 
@@ -116,7 +141,8 @@ export async function POST(request) {
 
   // Ensure directories exist
   if (!fs.existsSync(MODELS_DIR)) fs.mkdirSync(MODELS_DIR, { recursive: true });
-  if (!fs.existsSync(THUMBNAILS_DIR)) fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+  if (!fs.existsSync(THUMBNAILS_DIR))
+    fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
 
   const safeName = generateModelFilename(file.name);
   const modelName = name || file.name.replace(/\.[^.]+$/, "");
@@ -145,14 +171,24 @@ export async function POST(request) {
   const info = db
     .prepare(
       `INSERT INTO models (user_id, name, description, category, file_path, thumbnail_path, mime_type, size, polygon_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(user.id, modelName, description, category, publicModelPath, publicThumbnailPath, `model/${ext === ".glb" ? "gltf-binary" : "json"}`, file.size, polygonCount);
+    .run(
+      user.id,
+      modelName,
+      description,
+      category,
+      publicModelPath,
+      publicThumbnailPath,
+      `model/${ext === ".glb" ? "gltf-binary" : "json"}`,
+      file.size,
+      polygonCount,
+    );
 
   const model = db
     .prepare(
       `SELECT id, name, description, category, tags, file_path, thumbnail_path, mime_type, size, polygon_count, created_at
-         FROM models WHERE id = ?`
+         FROM models WHERE id = ?`,
     )
     .get(info.lastInsertRowid);
 
