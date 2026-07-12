@@ -148,45 +148,23 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
 }
 
 /**
- * Built-in sample models shipped in public/models/. These load instantly on
- * a fresh clone — no uploads/ directory needed.
- */
-const LOCAL_SAMPLES = [
-  { name: "Chair IKEA", url: "/models/ChairIKEA_test.glb" },
-  { name: "Table B1", url: "/models/TableB1.glb" },
-  { name: "Table S2", url: "/models/TableS2.glb" },
-];
-
-/**
- * Fetch models from the API endpoint (public/uploads/models/), merge with
- * local samples, and deduplicate by URL so nothing appears twice.
+ * Fetch models from the API endpoint. The backend merges seeded models
+ * (from public/models/*.glb) with user-uploaded models, so every client
+ * gets the full catalog automatically after a fresh clone.
  */
 async function fetchUserModels() {
-  let apiModels = [];
   try {
     const res = await fetch("/api/models?limit=100");
-    if (res.ok) {
-      const data = await res.json();
-      apiModels = (data.models || []).map((m) => ({
-        name: m.name,
-        url: m.file_path,
-      }));
-    }
+    if (!res.ok) return [];
+    const data = await res.json();
+    // API returns objects with extra DB fields — the viewer only needs name/url.
+    return (data.models || []).map((m) => ({
+      name: m.name,
+      url: m.file_path,
+    }));
   } catch {
-    // API unavailable — fall through to local samples only.
+    return [];
   }
-  // Merge API + local; deduplicate by both URL and name so uploaded copies
-  // with the same display name don't appear alongside the local samples.
-  const seenUrls = new Set(apiModels.map((m) => m.url));
-  const seenNames = new Set(apiModels.map((m) => m.name.toLowerCase()));
-  const localFiltered = LOCAL_SAMPLES.filter(
-    (s) => !seenUrls.has(s.url) && !seenNames.has(s.name.toLowerCase()),
-  );
-  // Local samples first (always visible), then API models not already shown.
-  return [
-    ...localFiltered,
-    ...apiModels.filter((m) => !seenNames.has(m.name.toLowerCase())),
-  ];
 }
 
 /**

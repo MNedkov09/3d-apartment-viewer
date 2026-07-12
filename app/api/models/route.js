@@ -12,11 +12,11 @@ import {
 
 export const runtime = "nodejs";
 
-const MODELS_DIR = path.join(process.cwd(), "public", "uploads", "models");
+const MODELS_DIR = path.join(process.cwd(), "public", "models", "uploaded");
 const THUMBNAILS_DIR = path.join(
   process.cwd(),
   "public",
-  "uploads",
+  "models",
   "thumbnails",
 );
 const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -32,14 +32,18 @@ export async function GET(request) {
   const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 100);
   const offset = (page - 1) * limit;
 
-  // Build WHERE clause dynamically — only filter by user_id if logged in.
-  // This lets anyone preview models without logging in; uploads still require auth.
+  // Build WHERE clause dynamically.
+  // Seeded models (source = 'seeded') always appear to everyone.
+  // When logged in, also include the user's uploaded models (source != 'seeded').
+  // When not logged in, only seeded models are visible.
   const whereClauses = [];
   const params = [];
 
   if (user) {
-    whereClauses.push("user_id = ?");
+    whereClauses.push("(source = 'seeded' OR user_id = ?)");
     params.push(user.id);
+  } else {
+    whereClauses.push("source = 'seeded'");
   }
 
   if (category && category !== "all") {
@@ -65,7 +69,7 @@ export async function GET(request) {
   // Get paginated results
   const rows = db
     .prepare(
-      `SELECT id, name, description, category, tags, file_path, thumbnail_path, mime_type, size, polygon_count, created_at
+      `SELECT id, name, description, category, tags, file_path, thumbnail_path, mime_type, size, polygon_count, created_at, source
          FROM models
         WHERE ${whereClause}
         ORDER BY created_at DESC
@@ -151,7 +155,7 @@ export async function POST(request) {
   const modelDiskPath = path.join(MODELS_DIR, safeName);
   fs.writeFileSync(modelDiskPath, buffer);
 
-  const publicModelPath = `/uploads/models/${safeName}`;
+  const publicModelPath = `/models/uploaded/${safeName}`;
 
   // Extract polygon count for GLB files
   let polygonCount = 0;
@@ -165,13 +169,13 @@ export async function POST(request) {
   const thumbnailDiskPath = path.join(THUMBNAILS_DIR, thumbnailFileName);
   fs.writeFileSync(thumbnailDiskPath, thumbnailSvg);
 
-  const publicThumbnailPath = `/uploads/thumbnails/${thumbnailFileName}`;
+  const publicThumbnailPath = `/models/thumbnails/${thumbnailFileName}`;
 
-  // Insert into database
+  // Insert into database (uploaded models — source is left as default 'seeded')
   const info = db
     .prepare(
-      `INSERT INTO models (user_id, name, description, category, file_path, thumbnail_path, mime_type, size, polygon_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO models (user_id, name, description, category, file_path, thumbnail_path, mime_type, size, polygon_count, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploaded')`,
     )
     .run(
       user.id,
