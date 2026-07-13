@@ -14,6 +14,22 @@ const PAD = 20;
 const SIMPLIFY_EPSILON = 2;
 const CORNER_ANGLE_THRESHOLD = 25;
 
+// Real wall fragments shrink once classification happens per-pixel instead
+// of per-component (see splitComponentsByThickness below), so a fragment
+// can legitimately be smaller than MIN_AREA above without being noise.
+const MIN_WALL_FRAGMENT_AREA = 150;
+// A component this compact (near-square bounding box) AND this solidly
+// filled reads as a logo/badge/icon, not a wall stroke — real wall
+// fragments are either elongated or mostly hollow, never both compact and
+// solid at once.
+const ICON_MAX_ASPECT = 1.3;
+const ICON_MIN_EXTENT = 0.5;
+// Max bounding-box gap (px) for two wall-weight fragments to count as part
+// of the same structure. Large enough to bridge a doorway or a rendering
+// gap between fragments of the same house; far smaller than the distance
+// from any real wall to a title-block logo, compass rose, or caption text.
+const WALL_CLUSTER_GAP = 70;
+
 /* ---------- OpenCV helpers ---------- */
 
 function zhangSuenThinning(data, width, height) {
@@ -232,11 +248,36 @@ function splitEdgeAtCorners(edge) {
 // What's actually reliable across virtually every floorplan convention is
 // that walls are drawn in a distinctly bolder stroke than everything else on
 // the page — text labels, dimension lines, fixture icons, hatching, door
-// swings. So we classify every sizeable component by its own stroke
-// thickness (via a distance transform, same technique as the window/curve
-// detection above) and keep *every* component that reads as wall-weight,
-// however many separate pieces the wall network is actually split into.
-function splitComponentsByThickness(mask, labels, stats, numLabels, rows, cols) {
+// swings. So we classify stroke weight (via a distance transform, same
+// technique as the window/curve detection below) and keep whatever reads as
+// wall-weight, however many separate pieces the wall network is actually
+// split into.
+//
+// That classification has to happen PER PIXEL, not per connected component.
+// A component's average thickness is only meaningful if the component is
+// made of one kind of material — but a single shared pixel is enough to
+// 8-connect a real wall into a faint background grid line, a page-border
+// rule, or a stray dimension tick. Once that happens the component is a mix
+// of a few hundred true wall pixels and thousands of thin ones, and the
+// average reads as "thin" even though real wall is sitting right there —
+// which silently deletes whole rooms from the scan. Distance-transform
+// value at a given pixel depends only on that pixel's distance to the
+// nearest background pixel, never on what it happens to be connected to, so
+// classifying pixel-by-pixel is immune to that merging problem.
+//
+// Stroke weight alone still isn't enough on its own, though: a logo, badge,
+// or compass rose in the page furniture is often drawn just as boldly as a
+// wall. Two more passes handle what thickness can't:
+//   1. Shape — a real wall fragment is either elongated (a straight run) or
+//      mostly hollow (an outline), never both compact AND solidly filled
+//      the way an icon is.
+//   2. Position — every survivor is grouped with its neighbors by
+//      bounding-box proximity, and only the single largest group is kept.
+//      Real wall fragments, however fragmented by doorways, all sit close
+//      to each other; page furniture sits well outside that cluster with
+//      nothing of similar weight bridging the gap.
+
+function computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols) {
   const dist = new cv.Mat();
   cv.distanceTransform(mask, dist, cv.DIST_L2, 5);
   const distData = dist.data32F;
@@ -258,9 +299,8 @@ function splitComponentsByThickness(mask, labels, stats, numLabels, rows, cols) 
     entries.push({ label: i, thickness: (sums[i] / counts[i]) * 2 });
   }
 
-  if (entries.length < 2) {
-    return new Set(entries.map((e) => e.label));
-  }
+  // Nothing to split against — treat every stroke weight as potential wall.
+  if (entries.length < 2) return 0;
 
   const sorted = [...entries].sort((a, b) => a.thickness - b.thickness);
   let maxGap = -1,
@@ -275,32 +315,120 @@ function splitComponentsByThickness(mask, labels, stats, numLabels, rows, cols) 
 
   const thinCeiling = sorted[gapIdx - 1].thickness;
   // Require a genuinely bimodal split (a gap that's a large fraction of the
-  // thin cluster's own thickness); otherwise treat every sizeable component
-  // as wall-weight — safer than accidentally discarding real walls when
+  // thin cluster's own thickness); otherwise don't cut anything on
+  // thickness alone — safer than accidentally discarding real walls when
   // nothing thin stands out to separate from them.
-  if (gapIdx === 0 || thinCeiling <= 0 || maxGap < thinCeiling * 0.6) {
-    return new Set(sorted.map((e) => e.label));
-  }
+  if (gapIdx === 0 || thinCeiling <= 0 || maxGap < thinCeiling * 0.6) return 0;
 
-  return new Set(sorted.slice(gapIdx).map((e) => e.label));
+  return sorted[gapIdx].thickness;
+}
+
+// Group wall-weight fragments by bounding-box proximity and keep only the
+// single largest group. Implemented as simple union-find over pairwise
+// bbox gaps — the fragment counts involved (dozens, not thousands) make the
+// O(n²) comparison negligible.
+function isolateDominantWallMass(wallData, rows, cols) {
+  const wallMat = new cv.Mat(rows, cols, cv.CV_8UC1);
+  wallMat.data.set(wallData);
+  const labels2 = new cv.Mat();
+  const stats2 = new cv.Mat();
+  const centroids2 = new cv.Mat();
+
+  const out = new Uint8Array(rows * cols);
+  try {
+    const numLabels2 = cv.connectedComponentsWithStats(
+      wallMat,
+      labels2,
+      stats2,
+      centroids2,
+      8,
+      cv.CV_32S,
+    );
+
+    const comps = [];
+    for (let i = 1; i < numLabels2; i++) {
+      const area = stats2.intAt(i, cv.CC_STAT_AREA);
+      if (area <= MIN_WALL_FRAGMENT_AREA) continue;
+      const x = stats2.intAt(i, cv.CC_STAT_LEFT);
+      const y = stats2.intAt(i, cv.CC_STAT_TOP);
+      const w = stats2.intAt(i, cv.CC_STAT_WIDTH);
+      const h = stats2.intAt(i, cv.CC_STAT_HEIGHT);
+      const aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
+      const extent = area / (w * h);
+      if (aspect < ICON_MAX_ASPECT && extent > ICON_MIN_EXTENT) continue; // icon/logo-shaped — drop
+      comps.push({ label: i, area, x, y, w, h });
+    }
+    if (comps.length === 0) return out;
+
+    const n = comps.length;
+    const parent = Array.from({ length: n }, (_, i) => i);
+    const find = (a) => {
+      while (parent[a] !== a) {
+        parent[a] = parent[parent[a]];
+        a = parent[a];
+      }
+      return a;
+    };
+    const union = (a, b) => {
+      const ra = find(a),
+        rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    };
+    const gapBetween = (a, b) => {
+      const dx = Math.max(a.x - (b.x + b.w), b.x - (a.x + a.w), 0);
+      const dy = Math.max(a.y - (b.y + b.h), b.y - (a.y + a.h), 0);
+      return Math.max(dx, dy);
+    };
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (gapBetween(comps[i], comps[j]) <= WALL_CLUSTER_GAP) union(i, j);
+      }
+    }
+
+    const groupArea = new Map();
+    for (let i = 0; i < n; i++) {
+      const root = find(i);
+      groupArea.set(root, (groupArea.get(root) || 0) + comps[i].area);
+    }
+    let bestRoot = -1,
+      bestArea = -1;
+    for (const [root, area] of groupArea) {
+      if (area > bestArea) {
+        bestArea = area;
+        bestRoot = root;
+      }
+    }
+    const keepLabels = new Set(
+      comps.filter((_, i) => find(i) === bestRoot).map((c) => c.label),
+    );
+
+    const labelData2 = labels2.data32S;
+    for (let p = 0; p < rows * cols; p++) {
+      if (keepLabels.has(labelData2[p])) out[p] = 1;
+    }
+    return out;
+  } finally {
+    wallMat.delete();
+    labels2.delete();
+    stats2.delete();
+    centroids2.delete();
+  }
 }
 
 function selectWallComponents(mask, labels, stats, numLabels, rows, cols) {
-  const thickLabels = splitComponentsByThickness(
-    mask,
-    labels,
-    stats,
-    numLabels,
-    rows,
-    cols,
-  );
+  const cutoff = computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols);
 
-  const wallData = new Uint8Array(rows * cols);
-  const labelData = labels.data32S;
+  const dist = new cv.Mat();
+  cv.distanceTransform(mask, dist, cv.DIST_L2, 5);
+  const distData = dist.data32F;
+  const maskData = mask.data;
+  const thickPixels = new Uint8Array(rows * cols);
   for (let p = 0; p < rows * cols; p++) {
-    if (thickLabels.has(labelData[p])) wallData[p] = 1;
+    if (maskData[p] && distData[p] * 2 >= cutoff) thickPixels[p] = 1;
   }
-  return wallData;
+  dist.delete();
+
+  return isolateDominantWallMass(thickPixels, rows, cols);
 }
 
 /* ---------- Window detection (holes in the wall stroke) ---------- */
