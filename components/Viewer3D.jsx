@@ -15,6 +15,8 @@ import {
   SceneLoader,
   Matrix,
   CSG,
+  Quaternion,
+  Space,
 } from "@babylonjs/core";
 import { Plane } from "@babylonjs/core";
 import { GLTFFileLoader } from "@babylonjs/loaders";
@@ -360,9 +362,12 @@ export default function Viewer3D({
   const wallMeshesRef = useRef([]);
   const keysRef = useRef(new Set());
   const draggedMeshRef = useRef(null);
+  const selectedMeshRef = useRef(null);
   const dragOffsetRef = useRef(new Vector3());
   const dragStartPosRef = useRef(new Vector3());
   const isDraggingRef = useRef(false);
+  // Track accumulated Y rotation angle (in radians) per root mesh object
+  const modelRotationRef = useRef(new Map());
   // Maps EVERY mesh in a placed model's hierarchy (root + all descendants)
   // to { entry, root }. Registering only the root used to be the bug: a
   // GLTF import's root is often an invisible transform node with zero
@@ -779,11 +784,18 @@ export default function Viewer3D({
       const hit = scene.pick(ptrX, ptrY, (mesh) =>
         meshToModelRef.current.has(mesh),
       );
-      if (!hit.hit) return;
+      if (!hit.hit) {
+        // Clicked empty space — deselect
+        selectedMeshRef.current = null;
+        return;
+      }
       const picked = hit.pickedMesh;
       if (!picked) return;
       const mapping = meshToModelRef.current.get(picked);
       if (!mapping) return;
+
+      // Select this mesh for rotation (R key works on selected mesh)
+      selectedMeshRef.current = mapping.root;
 
       // Drag the ROOT, not whatever child mesh was actually clicked —
       // moving the root cascades the whole hierarchy, and it's also
@@ -812,9 +824,16 @@ export default function Viewer3D({
 
       isDraggingRef.current = true;
       draggedMeshRef.current = root;
+      selectedMeshRef.current = root;
       dragOffsetRef.current.copyFrom(hitPoint);
       dragStartPosRef.current.copyFrom(root.position);
       setDraggedModel(mapping.entry);
+
+      // Always store the current quaternion as the base for next rotation
+      modelRotationRef.current.set(root, {
+        initialQuaternion: root.rotationQuaternion ?? Quaternion.Identity(),
+      });
+
       canvasRef.current.style.cursor = "grabbing";
     };
 
@@ -859,12 +878,13 @@ export default function Viewer3D({
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
 
+      const mesh = draggedMeshRef.current;
+
       const cam = cameraRef.current;
       if (cam) {
         cam.attachControl(canvasRef.current, true);
       }
 
-      const mesh = draggedMeshRef.current;
       if (mesh) {
         const mapping = meshToModelRef.current.get(mesh);
         if (mapping) {
@@ -872,10 +892,50 @@ export default function Viewer3D({
           mapping.entry.position[1] = 0;
           mapping.entry.position[2] = mesh.position.z - bounds.cz;
         }
-        draggedMeshRef.current = null;
         setDraggedModel(null);
       }
+
+      // Clear refs AFTER using them above
+      draggedMeshRef.current = null;
       canvasRef.current.style.cursor = "crosshair";
+    };
+
+    const onKeyDown = (e) => {
+      const keys = keysRef.current;
+
+      // Handle R key for 90-degree rotation — when actively dragging OR when a mesh is selected
+      if (
+        (e.key === "r" || e.key === "R") &&
+        isDraggingRef.current &&
+        draggedMeshRef.current
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const root = draggedMeshRef.current;
+
+        // +90° for R, -90° for Shift+R
+        const delta = e.shiftKey ? -(Math.PI / 4) : Math.PI / 4;
+
+        // Get stored initial quaternion for this model
+        const stored = modelRotationRef.current.get(root);
+        if (!stored) return;
+
+        // Apply relative Y rotation by multiplying initial quaternion with delta rotation
+        const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
+        root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
+
+        // Update the stored quaternion so subsequent rotations build from the new orientation
+        modelRotationRef.current.set(root, {
+          initialQuaternion: root.rotationQuaternion,
+        });
+      }
+
+      keys.add(e.key.toLowerCase());
+    };
+
+    const onKeyUp = (e) => {
+      keysRef.current.delete(e.key.toLowerCase());
     };
 
     canvasRef.current.addEventListener("pointerdown", onPointerDown);
@@ -884,6 +944,8 @@ export default function Viewer3D({
       onPointerMove,
     );
     canvasRef.current.ownerDocument.addEventListener("pointerup", onPointerUp);
+    canvasRef.current.ownerDocument.addEventListener("keydown", onKeyDown);
+    canvasRef.current.ownerDocument.addEventListener("keyup", onKeyUp);
 
     engine.runRenderLoop(() => {
       const keys = keysRef.current;
@@ -921,6 +983,11 @@ export default function Viewer3D({
         "pointerup",
         onPointerUp,
       );
+      canvasRef.current?.ownerDocument?.removeEventListener(
+        "keydown",
+        onKeyDown,
+      );
+      canvasRef.current?.ownerDocument?.removeEventListener("keyup", onKeyUp);
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
@@ -1011,8 +1078,8 @@ export default function Viewer3D({
             fontFamily: "sans-serif",
           }}
         >
-          WASD to move · Left-click to orbit · Drag models to reposition ·
-          Scroll to zoom
+          WASD to move · Click model to select · R to rotate · Drag to
+          reposition · Scroll to zoom
         </div>
       </div>
       <ModelPanel
