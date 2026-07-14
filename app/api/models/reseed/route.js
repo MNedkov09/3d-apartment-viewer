@@ -8,10 +8,18 @@ export const runtime = "nodejs";
 
 /**
  * POST /api/models/reseed
- * Rebuilds seeded models from the GLB files in public/models/.
- * - Deletes existing seeded records from the database.
+ * Rebuilds seeded model DB records from the GLB files in public/models/.
+ * - Deletes existing seeded rows from the database (DB rows only).
  * - Scans public/models/ for *.glb files (skips subdirectories like uploaded/, thumbnails/).
- * - Re-inserts them as seeded models with fresh thumbnails.
+ * - Re-inserts them as seeded models, pointing at the existing static thumbnails.
+ *
+ * IMPORTANT: seeded thumbnails in public/models/thumbnails/ are static source
+ * assets shared by every reseed, NOT per-record generated files. They must
+ * never be deleted from disk here — only uploaded-model thumbnails (if you
+ * generate those elsewhere) are safe to treat as disposable. Deleting the
+ * seeded SVGs on every reseed is what was silently wiping the thumbnail
+ * files themselves, so later reseeds could never find them and quietly
+ * skipped re-inserting those models altogether.
  */
 export async function POST() {
   const MODELS_DIR = path.join(process.cwd(), "public", "models");
@@ -22,24 +30,9 @@ export async function POST() {
     "thumbnails",
   );
 
-  // 1. Delete existing seeded records (and their thumbnails)
-  const existingSeeded = db
-    .prepare("SELECT thumbnail_path FROM models WHERE source = 'seeded'")
-    .all();
-
-  for (const row of existingSeeded) {
-    if (row.thumbnail_path) {
-      const thumbPath = path.join(process.cwd(), "public", row.thumbnail_path);
-      if (fs.existsSync(thumbPath)) {
-        try {
-          fs.unlinkSync(thumbPath);
-        } catch {
-          // Ignore deletion errors
-        }
-      }
-    }
-  }
-
+  // 1. Delete existing seeded DB rows only. Do NOT touch files on disk —
+  // seeded thumbnails are static assets, not generated artifacts tied to
+  // a specific row's lifecycle.
   db.prepare("DELETE FROM models WHERE source = 'seeded'").run();
 
   // 2. Scan for GLB files and re-seed
@@ -61,6 +54,7 @@ export async function POST() {
   );
 
   let reseeded = 0;
+  const skipped = [];
 
   const tx = db.transaction(() => {
     for (const fp of files) {
@@ -69,15 +63,15 @@ export async function POST() {
         .replace(/_test$/, "")
         .replace(/([a-z])([A-Z])/g, "$1 $2");
 
-      const ts = Date.now();
-      const thumbName = `seed-${ts}-${crypto.randomBytes(4).toString("hex")}.svg`;
+      // Look for an existing SVG thumbnail with the same name as the model
+      const thumbName = `${base}.svg`;
+      const thumbPath = path.join(THUMBNAILS_DIR, thumbName);
 
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" fill="#f5f5f5"/><rect x="88" y="88" width="80" height="80" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="2"/><text x="128" y="210" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#757575">${displayName}</text></svg>`;
-
-      if (!fs.existsSync(THUMBNAILS_DIR)) {
-        fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+      // Use the matching thumbnail if it exists, otherwise skip the model
+      if (!fs.existsSync(thumbPath)) {
+        skipped.push(path.basename(fp));
+        continue;
       }
-      fs.writeFileSync(path.join(THUMBNAILS_DIR, thumbName), svg);
 
       insert.run(
         null,
@@ -98,8 +92,16 @@ export async function POST() {
 
   tx();
 
+  if (skipped.length > 0) {
+    console.warn(
+      `Reseed: skipped ${skipped.length} model(s) with no matching thumbnail SVG:`,
+      skipped,
+    );
+  }
+
   return NextResponse.json({
     message: `Reseeded ${reseeded} seeded models from public/models/.`,
     reseeded,
+    skipped,
   });
 }

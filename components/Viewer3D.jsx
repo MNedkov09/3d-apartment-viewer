@@ -54,6 +54,30 @@ function rayGroundIntersect(scene, cam, canvas, flrY, ptrX, ptrY) {
   return ray.origin.add(ray.direction.scale(distance));
 }
 
+function computeBounds(edges, pixelsPerMeter) {
+  if (!edges || edges.length === 0) {
+    return { cx: 0, cz: 0, w: 10, d: 10 };
+  }
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity;
+  for (const edge of edges) {
+    for (const [x, y] of edge.points) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  const scale = 1 / pixelsPerMeter;
+  return {
+    cx: ((minX + maxX) / 2) * scale,
+    cz: ((minY + maxY) / 2) * scale,
+    w: (maxX - minX) * scale,
+    d: (maxY - minY) * scale,
+  };
+}
 /**
  * Carve rectangular window openings into already-built wall meshes.
  *
@@ -170,15 +194,129 @@ async function fetchUserModels() {
 }
 
 /**
- * Sidebar panel listing available models from the API and placed meshes in the scene.
- * Clicking an available model places it at the camera's ground intersection; clicking a placed
- * mesh starts dragging it around.
+ * Export scene state as a JSON file.
+ * Serializes floorplan (edges, windows) and placed models (name, position, rotation).
  */
+function exportSceneJSON(
+  edges,
+  windows,
+  placedModels,
+  wallHeightMeters,
+  wallThicknessMeters,
+  sillHeightMeters,
+  windowHeightMeters,
+  cameraDistance,
+) {
+  // Validate input data
+  if (!edges || edges.length === 0) {
+    throw new Error("Cannot export: no floorplan edges found");
+  }
+  if (!placedModels || placedModels.length === 0) {
+    throw new Error("Cannot export: no models placed in scene");
+  }
+
+  const placedData = placedModels.map((p) => {
+    // Normalize rotation: stored as [rx, ry, rz] or a single angle
+    const rotation = Array.isArray(p.rotation)
+      ? p.rotation
+      : [0, p.rotation ?? 0, 0];
+    return {
+      name: p.name,
+      position: [p.position[0], p.position[1] ?? 0, p.position[2]],
+      rotation,
+    };
+  });
+
+  const sceneData = {
+    version: 1,
+    floorplan: {
+      edges: edges,
+      windows: windows || [],
+      wallHeightMeters: wallHeightMeters ?? 2.8,
+      wallThicknessMeters: wallThicknessMeters ?? 0.15,
+      sillHeightMeters: sillHeightMeters ?? 0.9,
+      windowHeightMeters: windowHeightMeters ?? 1.2,
+      cameraDistance: cameraDistance ?? 10,
+    },
+    placedModels: placedData,
+    exportedAt: new Date().toISOString(),
+  };
+
+  const blob = new Blob([JSON.stringify(sceneData, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const timestamp = new Date().toISOString().replace(/[T:]/g, "-").slice(0, 19);
+  a.download = `scene-${timestamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Import scene state from a JSON file.
+ * Returns parsed scene data or throws on error.
+ */
+async function importSceneJSON(file) {
+  // Validate file type
+  if (
+    file.type &&
+    !file.type.startsWith("application/json") &&
+    !file.type.includes("json")
+  ) {
+    // Also check extension as fallback
+    if (!file.name.endsWith(".json")) {
+      throw new Error("Invalid file type: expected a JSON file");
+    }
+  }
+
+  let text;
+  try {
+    text = await file.text();
+  } catch (readErr) {
+    throw new Error("Failed to read file: " + readErr.message);
+  }
+
+  if (!text.trim()) {
+    throw new Error("Empty file");
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (parseErr) {
+    throw new Error("Invalid JSON format: " + parseErr.message);
+  }
+
+  // Validate required structure
+  if (!data.version) {
+    throw new Error("Missing version field in scene file");
+  }
+  if (data.version !== 1) {
+    throw new Error(
+      `Unsupported scene file version: ${data.version} (expected 1)`,
+    );
+  }
+  if (!data.floorplan) {
+    throw new Error("Missing floorplan data in scene file");
+  }
+  if (!Array.isArray(data.floorplan.edges)) {
+    throw new Error("Invalid floorplan: edges array is required");
+  }
+
+  return data;
+}
+
 function ModelPanel({
   availableModels,
   placedModels,
   draggedModel,
   onPlaceModel,
+  onExportScene,
+  onImportScene,
 }) {
   return (
     <div
@@ -257,6 +395,77 @@ function ModelPanel({
           </span>
         </div>
       ))}
+
+      {/* Scene import/export — always visible, independent of whether
+          any models are currently placed. Import needs to work on an
+          empty scene (that's the point of loading a saved one); Export
+          is disabled rather than hidden when there's nothing to save. */}
+      <div
+        style={{
+          marginTop: 8,
+          fontWeight: 600,
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "rgba(255,255,255,0.5)",
+        }}
+      >
+        Scene
+      </div>
+      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+        <button
+          onClick={onExportScene}
+          disabled={placedModels.length === 0}
+          style={{
+            flex: 1,
+            padding: "6px 0",
+            background: "rgba(255,255,255,0.1)",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.2)",
+            borderRadius: 4,
+            cursor: placedModels.length === 0 ? "not-allowed" : "pointer",
+            opacity: placedModels.length === 0 ? 0.4 : 1,
+            fontSize: 10,
+            fontFamily: "var(--font-mono, monospace)",
+          }}
+          title={
+            placedModels.length === 0
+              ? "Place at least one model to export"
+              : "Export scene state as JSON"
+          }
+        >
+          💾 Export
+        </button>
+        <label
+          style={{
+            flex: 1,
+            padding: "6px 0",
+            background: "rgba(255,255,255,0.1)",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.2)",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontSize: 10,
+            fontFamily: "var(--font-mono, monospace)",
+            textAlign: "center",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          📂 Import
+          <input
+            type="file"
+            accept=".json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) onImportScene(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
 
       {placedModels.length > 0 && (
         <>
@@ -361,6 +570,8 @@ export default function Viewer3D({
   const sceneRef = useRef(null);
   const wallMeshesRef = useRef([]);
   const keysRef = useRef(new Set());
+  const floorMeshRef = useRef(null);
+  const floorMatRef = useRef(null);
   const draggedMeshRef = useRef(null);
   const selectedMeshRef = useRef(null);
   const dragOffsetRef = useRef(new Vector3());
@@ -378,6 +589,10 @@ export default function Viewer3D({
   const floorYRef = useRef(-0.05);
   const cameraRef = useRef(null);
 
+  // Store edges/windows as refs so export can access them
+  const edgesRef = useRef([]);
+  const windowsRef = useRef([]);
+
   const [availableModels, setAvailableModels] = useState([]);
   const [placedModels, setPlacedModels] = useState([]);
   const [draggedModel, setDraggedModel] = useState(null);
@@ -393,35 +608,339 @@ export default function Viewer3D({
     };
   }, []);
 
-  // NOTE: `bounds` must be declared before anything that reads it (the
-  // spawnX/spawnZ state below, and the render-lifecycle effect further
-  // down). `const` isn't hoisted the way `var` is, so referencing
-  // `bounds.cx` above its own declaration throws "Cannot access 'bounds'
-  // before initialization" — that was the actual crash you hit.
-  const bounds = useMemo(() => {
-    if (!edges || edges.length === 0) {
-      return { cx: 0, cz: 0, w: 10, d: 10 };
-    }
-    let minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
+  // Bounds computed from edges — must be available before rebuildFromImport
+  // which references bounds.cx/cz for model positioning.
+  const bounds = useMemo(
+    () => computeBounds(edges, pixelsPerMeter),
+    [edges, pixelsPerMeter],
+  );
+
+  // FIX: cameraDistance moved up here — handleExportScene (below) depends on
+  // it in its useCallback dependency array. Previously cameraDistance was
+  // declared much further down the file (right before the big scene-setup
+  // effect), which meant handleExportScene referenced a `const` that hadn't
+  // been initialized yet in this render pass — a TDZ ReferenceError
+  // ("Cannot access 'cameraDistance' before initialization") on every render.
+  const cameraDistance = useMemo(() => {
+    if (!edges || edges.length === 0) return 10;
+    let maxExtent = 1;
+    const scale = 1 / pixelsPerMeter;
     for (const edge of edges) {
       for (const [x, y] of edge.points) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
+        maxExtent = Math.max(
+          maxExtent,
+          Math.abs(x * scale),
+          Math.abs(y * scale),
+        );
       }
     }
-    const scale = 1 / pixelsPerMeter;
-    return {
-      cx: ((minX + maxX) / 2) * scale,
-      cz: ((minY + maxY) / 2) * scale,
-      w: (maxX - minX) * scale,
-      d: (maxY - minY) * scale,
-    };
+    return Math.max(maxExtent * 1.8, 10);
   }, [edges, pixelsPerMeter]);
+
+  // Rebuild scene from imported JSON data.
+  // FIX: this must be declared before handleImportScene (below), which
+  // depends on it — same TDZ issue as cameraDistance above.
+  const rebuildFromImport = useCallback(
+    (sceneData) => {
+      const scene = sceneRef.current;
+      const canvas = canvasRef.current;
+      if (!scene || !canvas) {
+        alert("Cannot import: viewer not ready.");
+        return;
+      }
+
+      if (sceneData.version !== 1) {
+        alert("Unsupported scene file version");
+        return;
+      }
+
+      const fp = sceneData.floorplan;
+      const wallHeight = fp.wallHeightMeters ?? wallHeightMeters;
+      const wallThickness = fp.wallThicknessMeters ?? wallThicknessMeters;
+      const sillHeight = fp.sillHeightMeters ?? sillHeightMeters;
+      const windowHeight = fp.windowHeightMeters ?? windowHeightMeters;
+      const cameraDist = fp.cameraDistance ?? 10;
+
+      // Rebuild the 3D scene with imported floorplan settings
+      // Clear existing wall meshes
+      wallMeshesRef.current.forEach((m) => {
+        try {
+          m.dispose();
+        } catch (e) {
+          /* already disposed */
+        }
+      });
+      wallMeshesRef.current = [];
+      meshToModelRef.current.clear();
+
+      // Update refs with imported data
+      // Update refs with imported data
+      edgesRef.current = fp.edges;
+      windowsRef.current = fp.windows || [];
+
+      // Bounds must come from the IMPORTED edges, not the outer `bounds`
+      // memo (which reflects whatever edges are currently loaded from
+      // props). Using stale bounds here was sizing/positioning the floor
+      // for the wrong floorplan.
+      const importedBounds = computeBounds(fp.edges, pixelsPerMeter);
+
+      // Dispose the previous floor mesh/material before building a new
+      // one. Without this, the old floor was never removed — Babylon
+      // doesn't enforce unique mesh names, so a second "floor" mesh just
+      // stacked on top of (or beside) the first, which is what made the
+      // floor look wrong after import.
+      if (floorMeshRef.current) {
+        try {
+          floorMeshRef.current.dispose();
+        } catch (e) {
+          /* already disposed */
+        }
+      }
+      if (floorMatRef.current) {
+        try {
+          floorMatRef.current.dispose();
+        } catch (e) {
+          /* already disposed */
+        }
+      }
+
+      // Rebuild walls with imported settings
+      const halfThick = wallThickness / 2;
+      const floor = MeshBuilder.CreateGround(
+        "floor",
+        {
+          width: importedBounds.w + halfThick * 2,
+          height: importedBounds.d + halfThick * 2,
+          subdivisions: 2,
+          onReady: (mesh) => {
+            mesh.receiveShadows = true;
+          },
+        },
+        scene,
+      );
+      const floorY = -0.05;
+      floor.position = new Vector3(
+        importedBounds.cx,
+        floorY,
+        importedBounds.cz,
+      );
+      floorYRef.current = floorY;
+
+      const floorMat = new StandardMaterial("floorMat", scene);
+      floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
+      floorMat.specularColor = new Color3(0.2, 0.2, 0.2);
+      floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
+      floor.material = floorMat;
+
+      floorMeshRef.current = floor;
+      floorMatRef.current = floorMat;
+
+      const wallOpts = {
+        thickness: wallThickness,
+        height: wallHeight,
+        scale: 1 / pixelsPerMeter,
+      };
+      const wallMeshes = buildWallMeshes(fp.edges, wallOpts, scene);
+
+      const wallMat = new PBRMaterial("wallMat", scene);
+      wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
+      wallMat.metallic = 0.0;
+      wallMat.roughness = 0.8;
+      wallMeshes.forEach((mesh) => {
+        mesh.material = wallMat;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+      });
+
+      const cutWallMeshes =
+        fp.windows && fp.windows.length > 0
+          ? cutWindowOpenings(
+              fp.windows,
+              wallMeshes,
+              {
+                scale: 1 / pixelsPerMeter,
+                wallThickness,
+                sillHeight,
+                windowHeight,
+                wallHeight,
+              },
+              scene,
+            )
+          : wallMeshes;
+      cutWallMeshes.forEach((mesh) => {
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+      });
+
+      wallMeshesRef.current = cutWallMeshes;
+
+      // Update camera if distance changed
+      if (Math.abs(cameraDist - cameraRef.current?.radius) > 0.1) {
+        cameraRef.current.radius = cameraDist;
+      }
+
+      // Re-place models from saved positions/rotations (sequential chain)
+      if (sceneData.placedModels && sceneData.placedModels.length > 0) {
+        const newPlaced = [];
+
+        const loadChain = sceneData.placedModels.reduce(
+          (promiseChain, saved) => {
+            return promiseChain.then(() => {
+              return new Promise((resolve) => {
+                const apiModel = availableModels.find(
+                  (m) => m.name === saved.name,
+                );
+                if (!apiModel) {
+                  console.warn(`Model not found: ${saved.name}, skipping`);
+                  resolve();
+                  return;
+                }
+
+                // Target position from saved data (offset from bounds center)
+                const targetX = (saved.position?.[0] ?? 0) + importedBounds.cx;
+                const targetZ = (saved.position?.[2] ?? 0) + importedBounds.cz;
+                const targetY = saved.position?.[1] ?? 0;
+
+                const url = apiModel.url;
+                const name = url
+                  .split("/")
+                  .pop()
+                  .replace(/\.[^.]+$/, "");
+                const meshCountBefore = scene.meshes.length;
+
+                SceneLoader.Append(
+                  "",
+                  url,
+                  scene,
+                  (mesh) => {
+                    const newMeshes = scene.meshes.slice(meshCountBefore);
+                    if (newMeshes.length === 0) {
+                      resolve();
+                      return;
+                    }
+
+                    const root =
+                      newMeshes.find((m) => m.parent === null) || newMeshes[0];
+
+                    for (const m of newMeshes) {
+                      if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
+                        const mat = new PBRMaterial(
+                          `${name}_mat_${m.uniqueId}`,
+                          scene,
+                        );
+                        mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
+                        mat.metallic = 0.1;
+                        mat.roughness = 0.7;
+                        m.material = mat;
+                      }
+                      m.castShadow = true;
+                      m.receiveShadow = true;
+                    }
+
+                    // Set position to the saved position
+                    root.position.set(targetX, targetY, targetZ);
+
+                    // Apply saved rotation if available
+                    if (saved.rotation) {
+                      root.rotation.y = saved.rotation[1] ?? 0;
+                      modelRotationRef.current.set(root, {
+                        initialQuaternion:
+                          root.rotationQuaternion ?? Quaternion.Identity(),
+                      });
+                    }
+
+                    const entry = {
+                      name,
+                      position: [
+                        root.position.x - importedBounds.cx,
+                        0,
+                        root.position.z - importedBounds.cz,
+                      ],
+                      scaling: [1, 1, 1],
+                      url,
+                      mesh: root,
+                    };
+
+                    for (const m of newMeshes) {
+                      meshToModelRef.current.set(m, { entry, root });
+                    }
+
+                    newPlaced.push({ ...entry });
+                    resolve();
+                  },
+                  undefined,
+                  () => {
+                    resolve();
+                  },
+                );
+              });
+            });
+          },
+          Promise.resolve(), // seed with resolved promise
+        );
+
+        loadChain.then(() => {
+          setPlacedModels(newPlaced);
+          alert(
+            `Scene imported: ${newPlaced.length} models loaded successfully.`,
+          );
+        });
+      } else {
+        setPlacedModels([]);
+        alert(`Scene imported: No models to load.`);
+      }
+    },
+    [
+      availableModels,
+      bounds,
+      pixelsPerMeter,
+      wallHeightMeters,
+      wallThicknessMeters,
+      sillHeightMeters,
+      windowHeightMeters,
+    ],
+  );
+
+  // Export handler — called from ModelPanel sidebar
+  const handleExportScene = useCallback(() => {
+    // Use refs for edges/windows (stored during scene creation)
+    try {
+      exportSceneJSON(
+        edgesRef.current,
+        windowsRef.current,
+        placedModels,
+        wallHeightMeters,
+        wallThicknessMeters,
+        sillHeightMeters,
+        windowHeightMeters,
+        cameraDistance,
+      );
+    } catch (err) {
+      console.warn("Export skipped:", err.message);
+    }
+  }, [
+    placedModels,
+    wallHeightMeters,
+    wallThicknessMeters,
+    sillHeightMeters,
+    windowHeightMeters,
+    cameraDistance,
+  ]);
+
+  // Import handler — called from ModelPanel file input
+  const handleImportScene = useCallback(
+    async (file) => {
+      try {
+        const sceneData = await importSceneJSON(file);
+        rebuildFromImport(sceneData);
+      } catch (err) {
+        console.error("Import failed:", err);
+        alert(`Import failed: ${err.message}`);
+      }
+      // Reset file input so the same file can be re-selected
+    },
+    [rebuildFromImport],
+  );
 
   const _lastRotatedAt = useRef(new Map()); // debounce R key rotations
 
@@ -643,22 +1162,6 @@ export default function Viewer3D({
     [bounds, placedModels],
   );
 
-  const cameraDistance = useMemo(() => {
-    if (!edges || edges.length === 0) return 10;
-    let maxExtent = 1;
-    const scale = 1 / pixelsPerMeter;
-    for (const edge of edges) {
-      for (const [x, y] of edge.points) {
-        maxExtent = Math.max(
-          maxExtent,
-          Math.abs(x * scale),
-          Math.abs(y * scale),
-        );
-      }
-    }
-    return Math.max(maxExtent * 1.8, 10);
-  }, [edges, pixelsPerMeter]);
-
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
@@ -748,6 +1251,9 @@ export default function Viewer3D({
     floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
     floor.material = floorMat;
 
+    floorMeshRef.current = floor;
+    floorMatRef.current = floorMat;
+
     wallMeshesRef.current = [];
     const wallOpts = {
       thickness: wallThicknessMeters,
@@ -792,6 +1298,11 @@ export default function Viewer3D({
     });
 
     wallMeshesRef.current = cutWallMeshes;
+
+    // Store edges/windows in refs so export can access them
+    edgesRef.current = edges;
+    windowsRef.current = windows;
+
     const ourMeshes = [...cutWallMeshes];
 
     const _forward = Vector3.Zero();
@@ -1082,6 +1593,8 @@ export default function Viewer3D({
         placedModels={placedModels}
         draggedModel={draggedModel}
         onPlaceModel={placeModelInScene}
+        onExportScene={handleExportScene}
+        onImportScene={handleImportScene}
       />
     </div>
   );

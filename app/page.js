@@ -5,14 +5,31 @@ import FloorPlanThumb from "@/components/FloorPlanThumb";
 const SAMPLES = [
   { name: "Studio · Lozenets", area: "38 m²", rooms: "1 room", variant: 0 },
   { name: "Two-bed · Mladost", area: "74 m²", rooms: "2 rooms", variant: 1 },
-  { name: "Maisonette · Vitosha", area: "121 m²", rooms: "4 rooms", variant: 2 },
+  {
+    name: "Maisonette · Vitosha",
+    area: "121 m²",
+    rooms: "4 rooms",
+    variant: 2,
+  },
   { name: "Loft · Center", area: "56 m²", rooms: "open plan", variant: 3 },
 ];
 
 const STEPS = [
-  { n: "01", t: "Upload a drawing", d: "Drag in a floor plan image, PDF, or a 3D model file from your machine." },
-  { n: "02", t: "We store it", d: "Every upload lands in your account and shows up in your recent panel." },
-  { n: "03", t: "View in 3D", d: "Open any plan in the viewport and walk the space in three dimensions." },
+  {
+    n: "01",
+    t: "Upload a drawing",
+    d: "Drag in a floor plan image, PDF, or a 3D model file from your machine.",
+  },
+  {
+    n: "02",
+    t: "We store it",
+    d: "Every upload lands in your account and shows up in your recent panel.",
+  },
+  {
+    n: "03",
+    t: "View in 3D",
+    d: "Open any plan in the viewport and walk the space in three dimensions.",
+  },
 ];
 
 export default function HomePage() {
@@ -22,12 +39,26 @@ export default function HomePage() {
       <section className="container" style={{ padding: "72px 24px 56px" }}>
         <div style={{ maxWidth: 720 }}>
           <span className="eyebrow">3D Apartment Viewer</span>
-          <h1 style={{ fontSize: "clamp(40px, 6vw, 68px)", lineHeight: 1.02, marginTop: 18 }}>
+          <h1
+            style={{
+              fontSize: "clamp(40px, 6vw, 68px)",
+              lineHeight: 1.02,
+              marginTop: 18,
+            }}
+          >
             From flat drawing to a room you can walk through.
           </h1>
-          <p style={{ fontSize: 18, color: "var(--ink-soft)", marginTop: 20, maxWidth: 560 }}>
-            Plan/Space turns apartment blueprints into navigable 3D space. Upload a plan,
-            keep every version in one place, and explore the layout the way a person actually moves through it.
+          <p
+            style={{
+              fontSize: 18,
+              color: "var(--ink-soft)",
+              marginTop: 20,
+              maxWidth: 560,
+            }}
+          >
+            Plan/Space turns apartment blueprints into navigable 3D space.
+            Upload a plan, keep every version in one place, and explore the
+            layout the way a person actually moves through it.
           </p>
           <HeroActions />
         </div>
@@ -71,10 +102,18 @@ export default function HomePage() {
               key={s.name}
               href="/upload"
               className="card framed"
-              style={{ overflow: "hidden", transition: "border-color 0.15s ease" }}
+              style={{
+                overflow: "hidden",
+                transition: "border-color 0.15s ease",
+              }}
             >
               <FloorPlanThumb variant={s.variant} />
-              <div style={{ padding: "14px 16px", borderTop: "1px solid var(--line)" }}>
+              <div
+                style={{
+                  padding: "14px 16px",
+                  borderTop: "1px solid var(--line)",
+                }}
+              >
                 <div style={{ fontWeight: 500 }}>{s.name}</div>
                 <div
                   style={{
@@ -93,7 +132,13 @@ export default function HomePage() {
       </section>
 
       {/* How it works */}
-      <section style={{ background: "var(--paper-raised)", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }}>
+      <section
+        style={{
+          background: "var(--paper-raised)",
+          borderTop: "1px solid var(--line)",
+          borderBottom: "1px solid var(--line)",
+        }}
+      >
         <div className="container" style={{ padding: "56px 24px" }}>
           <span className="eyebrow">How it works</span>
           <div
@@ -117,7 +162,15 @@ export default function HomePage() {
                   {s.n}
                 </div>
                 <h3 style={{ fontSize: 20, marginTop: 10 }}>{s.t}</h3>
-                <p style={{ color: "var(--ink-soft)", fontSize: 14, marginTop: 8 }}>{s.d}</p>
+                <p
+                  style={{
+                    color: "var(--ink-soft)",
+                    fontSize: 14,
+                    marginTop: 8,
+                  }}
+                >
+                  {s.d}
+                </p>
               </div>
             ))}
           </div>

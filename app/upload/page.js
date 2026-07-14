@@ -10,14 +10,15 @@ export default function UploadPage() {
   const [active, setActive] = useState(null);
   const [loadingRecent, setLoadingRecent] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [reseedStatus, setReseedStatus] = useState(null); // { type, text }
-
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState(null); // { type, text }
   const inputRef = useRef(null);
+  // Guards the auto-reseed effect below so it fires at most once per
+  // page load, no matter how many times `user` changes reference.
+  const reseedRanRef = useRef(false);
 
   const checkAuth = useCallback(async () => {
     try {
@@ -55,6 +56,28 @@ export default function UploadPage() {
     return () => window.removeEventListener("auth-changed", onAuthChange);
   }, [checkAuth, loadRecent]);
 
+  // Auto-seed sample 3D models on page load (once).
+  useEffect(() => {
+    if (!user || reseedRanRef.current) return;
+    reseedRanRef.current = true;
+    let cancelled = false;
+    async function reseed() {
+      try {
+        const res = await fetch("/api/models/reseed", { method: "POST" });
+        const data = await res.json();
+        if (!cancelled && res.ok && data.reseeded > 0) {
+          loadRecent();
+        }
+      } catch {
+        // silently ignore reseed failures
+      }
+    }
+    reseed();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, loadRecent]);
+
   async function deleteOne(bp) {
     setDeleting(true);
     try {
@@ -80,27 +103,6 @@ export default function UploadPage() {
       }
     } finally {
       setDeleting(false);
-    }
-  }
-
-  async function reseedModels() {
-    setReseedStatus({ type: "loading" });
-    try {
-      const res = await fetch("/api/models/reseed", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setReseedStatus({
-          type: "ok",
-          text: `Reseeded ${data.reseeded} seeded models.`,
-        });
-      } else {
-        setReseedStatus({
-          type: "error",
-          text: data.message || "Reseed failed.",
-        });
-      }
-    } catch {
-      setReseedStatus({ type: "error", text: "Network error during reseed." });
     }
   }
 
@@ -216,39 +218,6 @@ export default function UploadPage() {
         Signed in as {user.name}. Drop a blueprint below — it saves to your
         account and opens in the viewport.
       </p>
-
-      {/* Model reseed control */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
-        <button
-          className="btn btn-ghost"
-          onClick={reseedModels}
-          disabled={reseedStatus?.type === "loading"}
-        >
-          {reseedStatus?.type === "loading"
-            ? "Reseeding…"
-            : "Reseed sample 3D models"}
-        </button>
-        {reseedStatus && reseedStatus.type !== "loading" && (
-          <span
-            className={`alert ${reseedStatus.type === "ok" ? "alert-ok" : "alert-error"}`}
-            style={{
-              display: "inline-block",
-              margin: 0,
-              fontSize: 13,
-              padding: "6px 12px",
-            }}
-          >
-            {reseedStatus.text}
-          </span>
-        )}
-      </div>
 
       <div
         style={{
