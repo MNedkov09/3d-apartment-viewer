@@ -423,8 +423,46 @@ export default function Viewer3D({
     };
   }, [edges, pixelsPerMeter]);
 
+  const _lastRotatedAt = useRef(new Map()); // debounce R key rotations
+
   const handleKeyDown = useCallback((e) => {
     keysRef.current.add(e.key.toLowerCase());
+
+    // R key: rotate model 90° — only when actively dragging (left click held on model)
+    if (
+      (e.key === "r" || e.key === "R") &&
+      isDraggingRef.current &&
+      draggedMeshRef.current
+    ) {
+      const now = performance.now();
+      const last = _lastRotatedAt.current.get("r") ?? 0;
+      if (now - last < 150) return;
+      _lastRotatedAt.current.set("r", now);
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const root = isDraggingRef.current
+        ? draggedMeshRef.current
+        : selectedMeshRef.current;
+      if (!root) return;
+
+      // +90° for R, -90° for Shift+R
+      const delta = e.shiftKey ? -(Math.PI / 2) : Math.PI / 2;
+
+      // Get stored initial quaternion for this model
+      const stored = modelRotationRef.current.get(root);
+      if (!stored) return;
+
+      // Apply relative Y rotation by multiplying initial quaternion with delta rotation
+      const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
+      root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
+
+      // Update the stored quaternion so subsequent rotations build from the new orientation
+      modelRotationRef.current.set(root, {
+        initialQuaternion: root.rotationQuaternion,
+      });
+    }
   }, []);
   const handleKeyUp = useCallback((e) => {
     keysRef.current.delete(e.key.toLowerCase());
@@ -900,52 +938,13 @@ export default function Viewer3D({
       canvasRef.current.style.cursor = "crosshair";
     };
 
-    const onKeyDown = (e) => {
-      const keys = keysRef.current;
-
-      // Handle R key for 90-degree rotation — when actively dragging OR when a mesh is selected
-      if (
-        (e.key === "r" || e.key === "R") &&
-        isDraggingRef.current &&
-        draggedMeshRef.current
-      ) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const root = draggedMeshRef.current;
-
-        // +90° for R, -90° for Shift+R
-        const delta = e.shiftKey ? -(Math.PI / 4) : Math.PI / 4;
-
-        // Get stored initial quaternion for this model
-        const stored = modelRotationRef.current.get(root);
-        if (!stored) return;
-
-        // Apply relative Y rotation by multiplying initial quaternion with delta rotation
-        const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
-        root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
-
-        // Update the stored quaternion so subsequent rotations build from the new orientation
-        modelRotationRef.current.set(root, {
-          initialQuaternion: root.rotationQuaternion,
-        });
-      }
-
-      keys.add(e.key.toLowerCase());
-    };
-
-    const onKeyUp = (e) => {
-      keysRef.current.delete(e.key.toLowerCase());
-    };
-
     canvasRef.current.addEventListener("pointerdown", onPointerDown);
     canvasRef.current.ownerDocument.addEventListener(
       "pointermove",
       onPointerMove,
     );
     canvasRef.current.ownerDocument.addEventListener("pointerup", onPointerUp);
-    canvasRef.current.ownerDocument.addEventListener("keydown", onKeyDown);
-    canvasRef.current.ownerDocument.addEventListener("keyup", onKeyUp);
+    // keydown/keyup handled by window listeners (handleKeyDown/handleKeyUp)
 
     engine.runRenderLoop(() => {
       const keys = keysRef.current;
@@ -983,11 +982,7 @@ export default function Viewer3D({
         "pointerup",
         onPointerUp,
       );
-      canvasRef.current?.ownerDocument?.removeEventListener(
-        "keydown",
-        onKeyDown,
-      );
-      canvasRef.current?.ownerDocument?.removeEventListener("keyup", onKeyUp);
+      // keydown/keyup cleanup handled by window listener effect above
       if (document.pointerLockElement === canvasRef.current) {
         document.exitPointerLock();
       }
