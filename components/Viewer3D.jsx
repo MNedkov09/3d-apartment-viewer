@@ -319,6 +319,7 @@ function ModelPanel({
   onPlaceModel,
   onExportScene,
   onImportScene,
+  onRemovePlacedModel,
 }) {
   return (
     <div
@@ -515,12 +516,14 @@ function ModelPanel({
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
+                  gap: 6,
                   color: "rgba(255,255,255,0.7)",
                   fontStyle: "italic",
                 }}
               >
                 <span
                   style={{
+                    flex: 1,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -536,11 +539,31 @@ function ModelPanel({
                       padding: "1px 5px",
                       borderRadius: 3,
                       flexShrink: 0,
-                      marginLeft: 6,
                     }}
                   >
                     Drag
                   </span>
+                )}
+                {onRemovePlacedModel && (
+                  <button
+                    onClick={() => onRemovePlacedModel(m)}
+                    title="Remove from scene"
+                    style={{
+                      background: "rgba(255,80,80,0.2)",
+                      color: "#fff",
+                      border: "1px solid rgba(255,80,80,0.4)",
+                      borderRadius: 3,
+                      width: 18,
+                      height: 18,
+                      fontSize: 10,
+                      lineHeight: 1,
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      fontStyle: "normal",
+                    }}
+                  >
+                    ✕
+                  </button>
                 )}
               </div>
             );
@@ -595,6 +618,7 @@ export default function Viewer3D({
   const isDraggingRef = useRef(false);
   // Track accumulated Y rotation angle (in radians) per root mesh object
   const modelRotationRef = useRef(new Map());
+  const removePlacedModelRef = useRef(() => {});
   // Maps EVERY mesh in a placed model's hierarchy (root + all descendants)
   // to { entry, root }. Registering only the root used to be the bug: a
   // GLTF import's root is often an invisible transform node with zero
@@ -993,6 +1017,31 @@ export default function Viewer3D({
   const handleKeyDown = useCallback((e) => {
     keysRef.current.add(e.key.toLowerCase());
 
+    // Delete / Backspace: remove the currently selected model from the
+    // scene. Selection is set on click (see onPointerDown) and persists
+    // after you release the mouse — you don't need to be actively
+    // dragging, just to have clicked a model beforehand.
+    if (e.key === "Delete" || e.key === "Backspace") {
+      const root = selectedMeshRef.current;
+      if (!root) return;
+
+      // Don't let Backspace delete a model while the user is typing in an
+      // input/textarea elsewhere on the page (title field, etc).
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      e.preventDefault();
+
+      // meshToModelRef maps every mesh (root + descendants) to { entry, root }.
+      // The root itself is always registered, so this lookup will succeed
+      // for anything that's actually a placed, selected model.
+      const mapping = meshToModelRef.current.get(root);
+      if (mapping) {
+        removePlacedModelRef.current(mapping.entry);
+      }
+      return;
+    }
+
     // R key: rotate model 90° — only when actively dragging (left click held on model)
     if (
       (e.key === "r" || e.key === "R") &&
@@ -1012,18 +1061,13 @@ export default function Viewer3D({
         : selectedMeshRef.current;
       if (!root) return;
 
-      // +90° for R, -90° for Shift+R
       const delta = e.shiftKey ? -(Math.PI / 2) : Math.PI / 2;
-
-      // Get stored initial quaternion for this model
       const stored = modelRotationRef.current.get(root);
       if (!stored) return;
 
-      // Apply relative Y rotation by multiplying initial quaternion with delta rotation
       const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
       root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
 
-      // Update the stored quaternion so subsequent rotations build from the new orientation
       modelRotationRef.current.set(root, {
         initialQuaternion: root.rotationQuaternion,
       });
@@ -1207,6 +1251,38 @@ export default function Viewer3D({
     },
     [bounds, placedModels],
   );
+
+  const removePlacedModel = useCallback((entryToRemove) => {
+    const root = entryToRemove.mesh;
+    if (!root) return;
+
+    for (const [mesh, mapping] of meshToModelRef.current.entries()) {
+      if (mapping.entry === entryToRemove || mapping.root === root) {
+        meshToModelRef.current.delete(mesh);
+      }
+    }
+
+    modelRotationRef.current.delete(root);
+
+    if (selectedMeshRef.current === root) selectedMeshRef.current = null;
+    if (draggedMeshRef.current === root) {
+      draggedMeshRef.current = null;
+      isDraggingRef.current = false;
+      setDraggedModel(null);
+    }
+
+    try {
+      root.dispose(false, true);
+    } catch (e) {
+      // already disposed
+    }
+
+    setPlacedModels((prev) => prev.filter((p) => p.mesh !== root));
+  }, []);
+
+  useEffect(() => {
+    removePlacedModelRef.current = removePlacedModel;
+  }, [removePlacedModel]);
 
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
@@ -1651,8 +1727,8 @@ export default function Viewer3D({
             fontFamily: "sans-serif",
           }}
         >
-          WASD to move · Click model to select · R to rotate · Drag to
-          reposition · Scroll to zoom
+          WASD to move · Click model to select · R to rotate · Del to remove ·
+          Drag to reposition · Scroll to zoom
         </div>
       </div>
       <ModelPanel
@@ -1662,6 +1738,7 @@ export default function Viewer3D({
         onPlaceModel={placeModelInScene}
         onExportScene={handleExportScene}
         onImportScene={handleImportScene}
+        onRemovePlacedModel={removePlacedModel}
       />
     </div>
   );
