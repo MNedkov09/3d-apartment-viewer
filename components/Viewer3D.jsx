@@ -945,17 +945,20 @@ export default function Viewer3D({
 
                     // Apply saved rotation via rotationQuaternion, not Euler .rotation.
                     // GLTF-imported roots come back from the loader with a non-null
-                    // rotationQuaternion already assigned, and once that's set Babylon
-                    // ignores plain .rotation assignments when computing the world matrix.
-                    // The R-key handler already rotates through rotationQuaternion for
-                    // this exact reason — import needs to match it, or the saved rotation
-                    // silently never shows up on screen.
+                    // rotationQuaternion already assigned (from coordinate system conversion).
+                    // The saved yaw was captured relative to this initial quaternion, so we
+                    // must MULTIPLY by it rather than overwrite, or the model will appear
+                    // rotated incorrectly (typically +180 degrees from what was saved).
                     const savedYaw = saved.rotation?.[1] ?? 0;
-                    root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
+                    const loaderInitialQuat = root.rotationQuaternion;
+                    const savedRotationQuat = Quaternion.RotationYawPitchRoll(
                       savedYaw,
                       0,
                       0,
                     );
+                    // Multiply: loader's initial quaternion THEN the saved rotation
+                    root.rotationQuaternion =
+                      loaderInitialQuat.multiply(savedRotationQuat);
                     modelRotationRef.current.set(root, {
                       initialQuaternion: root.rotationQuaternion,
                     });
