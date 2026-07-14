@@ -9,10 +9,10 @@ const CANVAS_W = 800;
 const CANVAS_H = 600;
 const THRESH_BLOCK = 25;
 const THRESH_C = 8;
-const MIN_AREA = 150;
+const MIN_AREA = 200;
 const PAD = 20;
 const SIMPLIFY_EPSILON = 2.5;
-const CORNER_ANGLE_THRESHOLD = 15;
+const CORNER_ANGLE_THRESHOLD = 20;
 
 /* ---------- OpenCV helpers ---------- */
 
@@ -396,10 +396,10 @@ function selectWallComponents(mask, labels, stats, numLabels, rows, cols, colorD
 // point-by-point along the skeleton, which washes out once the window sits in the
 // middle of an otherwise-thick, unbroken wall run.
 
-const WINDOW_MIN_ASPECT = 1.2; // long/short ratio required for a hole to read as a window slit, not a stray nick
-const WINDOW_MAX_SHORT_FACTOR = 1.8; // hole's short side must be <= this * wall thickness
-const WINDOW_MIN_LONG_FACTOR = 1.0; // hole's long side must be >= this * wall thickness
-const WINDOW_MAX_LONG_PX = 280; // hard ceiling so a room interior is never mistaken for a window
+const WINDOW_MIN_ASPECT = 2.5; // long/short ratio required for a hole to read as a window slit, not a stray nick
+const WINDOW_MAX_SHORT_FACTOR = 1.2; // hole's short side must be <= this * wall thickness
+const WINDOW_MIN_LONG_FACTOR = 2.0; // hole's long side must be >= this * wall thickness
+const WINDOW_MAX_LONG_PX = 500; // hard ceiling so a room interior is never mistaken for a window
 
 function estimateWallThickness(wallMat, rows, cols) {
   const dist = new cv.Mat();
@@ -649,7 +649,7 @@ function skeletonizeAndTrace(binaryData, cols, rows) {
 // continuous (so a normal, solid wall gets built there) — Viewer3D is what
 // actually carves the window-height opening out of that solid wall later.
 
-const WINDOW_EXCLUDE_PAD = 5; // px: margin so stub artifacts hugging a window are reliably caught
+const WINDOW_EXCLUDE_PAD = 8; // px: margin so stub artifacts hugging a window are reliably caught
 const WINDOW_SNAP_TOLERANCE = 15; // px: snap a window's bridge endpoint onto a real wall endpoint if one is close by
 
 function pointInWindowBox(pt, win, pad) {
@@ -678,7 +678,7 @@ function edgeMostlyInsideWindows(edge, windows, pad) {
     for (const pt of edge.points) {
       if (pointInWindowBox(pt, win, pad)) insideCount++;
     }
-    if (insideCount / edge.points.length > 0.2) return true;
+    if (insideCount / edge.points.length > 0.6) return true;
   }
   return false;
 }
@@ -826,8 +826,8 @@ function isDoorSwingArc(rawPoints, closed) {
 // door arc, roughly continuing the wall's own direction, is treated as a
 // window instead.
 
-const GAP_WINDOW_MIN_PX = 4;
-const GAP_WINDOW_MAX_PX = 60; // cap so we don't bridge across an actual missing wall / disconnected room
+const GAP_WINDOW_MIN_PX = 2;
+const GAP_WINDOW_MAX_PX = 200; // cap so we don't bridge across an actual missing wall / disconnected room
 const GAP_WINDOW_COLINEAR_TOLERANCE_DEG = 10; // how closely the gap must continue the wall's own direction
 const GAP_WINDOW_DOOR_EXCLUDE_PX = 15; // a rejected door-arc anchor this close means "that's a door, not a window"
 
