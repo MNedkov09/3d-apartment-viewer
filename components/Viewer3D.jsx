@@ -218,12 +218,12 @@ function exportSceneJSON(
   }
 
   const placedData = placedModels.map((p) => {
-    // Normalize rotation: stored as [rx, ry, rz] or a single angle
     const rotation = Array.isArray(p.rotation)
       ? p.rotation
       : [0, p.rotation ?? 0, 0];
     return {
       name: p.name,
+      url: p.url,
       position: [p.position[0], p.position[1] ?? 0, p.position[2]],
       rotation,
     };
@@ -619,6 +619,10 @@ export default function Viewer3D({
   // Track accumulated Y rotation angle (in radians) per root mesh object
   const modelRotationRef = useRef(new Map());
   const removePlacedModelRef = useRef(() => {});
+  // Tracks the CURRENT yaw angle (radians) per root mesh — separate from
+  // modelRotationRef, which stores the base quaternion R rotates FROM.
+  // This is the actual value written into entry.rotation for export.
+  const yawAngleRef = useRef(new Map());
   // Maps EVERY mesh in a placed model's hierarchy (root + all descendants)
   // to { entry, root }. Registering only the root used to be the bug: a
   // GLTF import's root is often an invisible transform node with zero
@@ -732,6 +736,35 @@ export default function Viewer3D({
       const cameraDist = fp.cameraDistance ?? 10;
 
       // Rebuild the 3D scene with imported floorplan settings
+      const rootsToDispose = new Set();
+      for (const { root } of meshToModelRef.current.values()) {
+        rootsToDispose.add(root);
+      }
+      rootsToDispose.forEach((root) => {
+        try {
+          root.dispose(false, true);
+        } catch (e) {
+          /* already disposed */
+        }
+      });
+      modelRotationRef.current.clear();
+      yawAngleRef.current.clear();
+      selectedMeshRef.current = null;
+      draggedMeshRef.current = null;
+      isDraggingRef.current = false;
+      setDraggedModel(null);
+
+      // Rebuild the 3D scene with imported floorplan settings
+      // Clear existing wall meshes
+      wallMeshesRef.current.forEach((m) => {
+        try {
+          m.dispose();
+        } catch (e) {
+          /* already disposed */
+        }
+      });
+      wallMeshesRef.current = [];
+      meshToModelRef.current.clear();
       // Clear existing wall meshes
       wallMeshesRef.current.forEach((m) => {
         try {
@@ -857,9 +890,9 @@ export default function Viewer3D({
           (promiseChain, saved) => {
             return promiseChain.then(() => {
               return new Promise((resolve) => {
-                const apiModel = availableModels.find(
-                  (m) => m.name === saved.name,
-                );
+                const apiModel =
+                  availableModels.find((m) => m.url === saved.url) ||
+                  availableModels.find((m) => m.name === saved.name);
                 if (!apiModel) {
                   console.warn(`Model not found: ${saved.name}, skipping`);
                   resolve();
@@ -910,14 +943,22 @@ export default function Viewer3D({
                     // Set position to the saved position
                     root.position.set(targetX, targetY, targetZ);
 
-                    // Apply saved rotation if available
-                    if (saved.rotation) {
-                      root.rotation.y = saved.rotation[1] ?? 0;
-                      modelRotationRef.current.set(root, {
-                        initialQuaternion:
-                          root.rotationQuaternion ?? Quaternion.Identity(),
-                      });
-                    }
+                    // Apply saved rotation via rotationQuaternion, not Euler .rotation.
+                    // GLTF-imported roots come back from the loader with a non-null
+                    // rotationQuaternion already assigned, and once that's set Babylon
+                    // ignores plain .rotation assignments when computing the world matrix.
+                    // The R-key handler already rotates through rotationQuaternion for
+                    // this exact reason — import needs to match it, or the saved rotation
+                    // silently never shows up on screen.
+                    const savedYaw = saved.rotation?.[1] ?? 0;
+                    root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
+                      savedYaw,
+                      0,
+                      0,
+                    );
+                    modelRotationRef.current.set(root, {
+                      initialQuaternion: root.rotationQuaternion,
+                    });
 
                     const entry = {
                       name,
@@ -926,10 +967,13 @@ export default function Viewer3D({
                         0,
                         root.position.z - importedBounds.cz,
                       ],
+                      rotation: [0, savedYaw, 0],
                       scaling: [1, 1, 1],
                       url,
                       mesh: root,
                     };
+
+                    yawAngleRef.current.set(root, savedYaw);
 
                     for (const m of newMeshes) {
                       meshToModelRef.current.set(m, { entry, root });
@@ -1068,9 +1112,25 @@ export default function Viewer3D({
       const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
       root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
 
+      // Update the stored quaternion so subsequent rotations build from the new orientation
       modelRotationRef.current.set(root, {
         initialQuaternion: root.rotationQuaternion,
       });
+
+      // Track the running yaw angle and write it into entry.rotation so
+      // export actually captures it. Mutating index [1] in place (rather
+      // than replacing the array) means this update is visible through
+      // both the live `entry` object and its shallow-copied counterpart
+      // in the placedModels state array, since they share the same
+      // rotation array reference.
+      const prevYaw = yawAngleRef.current.get(root) ?? 0;
+      const newYaw = prevYaw + delta;
+      yawAngleRef.current.set(root, newYaw);
+
+      const mapping = meshToModelRef.current.get(root);
+      if (mapping?.entry?.rotation) {
+        mapping.entry.rotation[1] = newYaw;
+      }
     }
   }, []);
   const handleKeyUp = useCallback((e) => {
@@ -1139,8 +1199,13 @@ export default function Viewer3D({
    * EVERY mesh in that hierarchy in meshToModelRef — so clicking any
    * visible child correctly resolves back to "drag the root."
    */
+  const lastPlaceAtRef = useRef(0);
   const placeModelInScene = useCallback(
     (apiModel) => {
+      const now = performance.now();
+      if (now - lastPlaceAtRef.current < 250) return; // swallow duplicate fires
+      lastPlaceAtRef.current = now;
+
       const cam = cameraRef.current;
       const scene = sceneRef.current;
       const canvas = canvasRef.current;
@@ -1233,6 +1298,7 @@ export default function Viewer3D({
           const entry = {
             name,
             position: [spawnPoint.x - bounds.cx, 0, spawnPoint.z - bounds.cz],
+            rotation: [0, 0, 0],
             scaling: [1, 1, 1],
             url,
           };
@@ -1240,6 +1306,8 @@ export default function Viewer3D({
           for (const m of newMeshes) {
             meshToModelRef.current.set(m, { entry, root });
           }
+
+          yawAngleRef.current.set(root, 0);
 
           setPlacedModels((prev) => [...prev, { ...entry, mesh: root }]);
         },
@@ -1263,6 +1331,7 @@ export default function Viewer3D({
     }
 
     modelRotationRef.current.delete(root);
+    yawAngleRef.current.delete(root);
 
     if (selectedMeshRef.current === root) selectedMeshRef.current = null;
     if (draggedMeshRef.current === root) {
