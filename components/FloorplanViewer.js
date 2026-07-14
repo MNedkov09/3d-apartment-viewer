@@ -9,26 +9,10 @@ const CANVAS_W = 800;
 const CANVAS_H = 600;
 const THRESH_BLOCK = 25;
 const THRESH_C = 8;
-const MIN_AREA = 500;
+const MIN_AREA = 150;
 const PAD = 20;
-const SIMPLIFY_EPSILON = 2;
-const CORNER_ANGLE_THRESHOLD = 25;
-
-// Real wall fragments shrink once classification happens per-pixel instead
-// of per-component (see splitComponentsByThickness below), so a fragment
-// can legitimately be smaller than MIN_AREA above without being noise.
-const MIN_WALL_FRAGMENT_AREA = 150;
-// A component this compact (near-square bounding box) AND this solidly
-// filled reads as a logo/badge/icon, not a wall stroke — real wall
-// fragments are either elongated or mostly hollow, never both compact and
-// solid at once.
-const ICON_MAX_ASPECT = 1.3;
-const ICON_MIN_EXTENT = 0.5;
-// Max bounding-box gap (px) for two wall-weight fragments to count as part
-// of the same structure. Large enough to bridge a doorway or a rendering
-// gap between fragments of the same house; far smaller than the distance
-// from any real wall to a title-block logo, compass rose, or caption text.
-const WALL_CLUSTER_GAP = 70;
+const SIMPLIFY_EPSILON = 2.5;
+const CORNER_ANGLE_THRESHOLD = 15;
 
 /* ---------- OpenCV helpers ---------- */
 
@@ -248,36 +232,11 @@ function splitEdgeAtCorners(edge) {
 // What's actually reliable across virtually every floorplan convention is
 // that walls are drawn in a distinctly bolder stroke than everything else on
 // the page — text labels, dimension lines, fixture icons, hatching, door
-// swings. So we classify stroke weight (via a distance transform, same
-// technique as the window/curve detection below) and keep whatever reads as
-// wall-weight, however many separate pieces the wall network is actually
-// split into.
-//
-// That classification has to happen PER PIXEL, not per connected component.
-// A component's average thickness is only meaningful if the component is
-// made of one kind of material — but a single shared pixel is enough to
-// 8-connect a real wall into a faint background grid line, a page-border
-// rule, or a stray dimension tick. Once that happens the component is a mix
-// of a few hundred true wall pixels and thousands of thin ones, and the
-// average reads as "thin" even though real wall is sitting right there —
-// which silently deletes whole rooms from the scan. Distance-transform
-// value at a given pixel depends only on that pixel's distance to the
-// nearest background pixel, never on what it happens to be connected to, so
-// classifying pixel-by-pixel is immune to that merging problem.
-//
-// Stroke weight alone still isn't enough on its own, though: a logo, badge,
-// or compass rose in the page furniture is often drawn just as boldly as a
-// wall. Two more passes handle what thickness can't:
-//   1. Shape — a real wall fragment is either elongated (a straight run) or
-//      mostly hollow (an outline), never both compact AND solidly filled
-//      the way an icon is.
-//   2. Position — every survivor is grouped with its neighbors by
-//      bounding-box proximity, and only the single largest group is kept.
-//      Real wall fragments, however fragmented by doorways, all sit close
-//      to each other; page furniture sits well outside that cluster with
-//      nothing of similar weight bridging the gap.
-
-function computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols) {
+// swings. So we classify every sizeable component by its own stroke
+// thickness (via a distance transform, same technique as the window/curve
+// detection above) and keep *every* component that reads as wall-weight,
+// however many separate pieces the wall network is actually split into.
+function splitComponentsByThickness(mask, labels, stats, numLabels, rows, cols) {
   const dist = new cv.Mat();
   cv.distanceTransform(mask, dist, cv.DIST_L2, 5);
   const distData = dist.data32F;
@@ -299,8 +258,9 @@ function computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols) 
     entries.push({ label: i, thickness: (sums[i] / counts[i]) * 2 });
   }
 
-  // Nothing to split against — treat every stroke weight as potential wall.
-  if (entries.length < 2) return 0;
+  if (entries.length < 2) {
+    return new Set(entries.map((e) => e.label));
+  }
 
   const sorted = [...entries].sort((a, b) => a.thickness - b.thickness);
   let maxGap = -1,
@@ -315,120 +275,115 @@ function computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols) 
 
   const thinCeiling = sorted[gapIdx - 1].thickness;
   // Require a genuinely bimodal split (a gap that's a large fraction of the
-  // thin cluster's own thickness); otherwise don't cut anything on
-  // thickness alone — safer than accidentally discarding real walls when
+  // thin cluster's own thickness); otherwise treat every sizeable component
+  // as wall-weight — safer than accidentally discarding real walls when
   // nothing thin stands out to separate from them.
-  if (gapIdx === 0 || thinCeiling <= 0 || maxGap < thinCeiling * 0.6) return 0;
-
-  return sorted[gapIdx].thickness;
-}
-
-// Group wall-weight fragments by bounding-box proximity and keep only the
-// single largest group. Implemented as simple union-find over pairwise
-// bbox gaps — the fragment counts involved (dozens, not thousands) make the
-// O(n²) comparison negligible.
-function isolateDominantWallMass(wallData, rows, cols) {
-  const wallMat = new cv.Mat(rows, cols, cv.CV_8UC1);
-  wallMat.data.set(wallData);
-  const labels2 = new cv.Mat();
-  const stats2 = new cv.Mat();
-  const centroids2 = new cv.Mat();
-
-  const out = new Uint8Array(rows * cols);
-  try {
-    const numLabels2 = cv.connectedComponentsWithStats(
-      wallMat,
-      labels2,
-      stats2,
-      centroids2,
-      8,
-      cv.CV_32S,
-    );
-
-    const comps = [];
-    for (let i = 1; i < numLabels2; i++) {
-      const area = stats2.intAt(i, cv.CC_STAT_AREA);
-      if (area <= MIN_WALL_FRAGMENT_AREA) continue;
-      const x = stats2.intAt(i, cv.CC_STAT_LEFT);
-      const y = stats2.intAt(i, cv.CC_STAT_TOP);
-      const w = stats2.intAt(i, cv.CC_STAT_WIDTH);
-      const h = stats2.intAt(i, cv.CC_STAT_HEIGHT);
-      const aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
-      const extent = area / (w * h);
-      if (aspect < ICON_MAX_ASPECT && extent > ICON_MIN_EXTENT) continue; // icon/logo-shaped — drop
-      comps.push({ label: i, area, x, y, w, h });
-    }
-    if (comps.length === 0) return out;
-
-    const n = comps.length;
-    const parent = Array.from({ length: n }, (_, i) => i);
-    const find = (a) => {
-      while (parent[a] !== a) {
-        parent[a] = parent[parent[a]];
-        a = parent[a];
-      }
-      return a;
-    };
-    const union = (a, b) => {
-      const ra = find(a),
-        rb = find(b);
-      if (ra !== rb) parent[ra] = rb;
-    };
-    const gapBetween = (a, b) => {
-      const dx = Math.max(a.x - (b.x + b.w), b.x - (a.x + a.w), 0);
-      const dy = Math.max(a.y - (b.y + b.h), b.y - (a.y + a.h), 0);
-      return Math.max(dx, dy);
-    };
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        if (gapBetween(comps[i], comps[j]) <= WALL_CLUSTER_GAP) union(i, j);
-      }
-    }
-
-    const groupArea = new Map();
-    for (let i = 0; i < n; i++) {
-      const root = find(i);
-      groupArea.set(root, (groupArea.get(root) || 0) + comps[i].area);
-    }
-    let bestRoot = -1,
-      bestArea = -1;
-    for (const [root, area] of groupArea) {
-      if (area > bestArea) {
-        bestArea = area;
-        bestRoot = root;
-      }
-    }
-    const keepLabels = new Set(
-      comps.filter((_, i) => find(i) === bestRoot).map((c) => c.label),
-    );
-
-    const labelData2 = labels2.data32S;
-    for (let p = 0; p < rows * cols; p++) {
-      if (keepLabels.has(labelData2[p])) out[p] = 1;
-    }
-    return out;
-  } finally {
-    wallMat.delete();
-    labels2.delete();
-    stats2.delete();
-    centroids2.delete();
+  if (gapIdx === 0 || thinCeiling <= 0 || maxGap < thinCeiling * 0.4) {
+    return new Set(sorted.map((e) => e.label));
   }
+
+  return new Set(sorted.slice(gapIdx).map((e) => e.label));
 }
 
-function selectWallComponents(mask, labels, stats, numLabels, rows, cols) {
-  const cutoff = computeWallThicknessCutoff(mask, labels, stats, numLabels, rows, cols);
+const COLOR_MATCH_THRESHOLD = 175; // max RGB distance from the reference wall color to still count as "wall"
+const COLOR_FALLBACK_MIN_KEEP_FRACTION = 0.6; // if color filtering would throw away more than this fraction of thick-ink pixels, skip it — the floorplan probably isn't consistently color-coded
 
-  const dist = new cv.Mat();
-  cv.distanceTransform(mask, dist, cv.DIST_L2, 5);
-  const distData = dist.data32F;
-  const maskData = mask.data;
-  const thickPixels = new Uint8Array(rows * cols);
+function averageColorsPerLabel(colorData, labelData, numLabels) {
+  const sr = new Float64Array(numLabels);
+  const sg = new Float64Array(numLabels);
+  const sb = new Float64Array(numLabels);
+  const count = new Int32Array(numLabels);
+  for (let p = 0; p < labelData.length; p++) {
+    const lbl = labelData[p];
+    if (lbl === 0) continue;
+    const idx = p * 3;
+    sr[lbl] += colorData[idx];
+    sg[lbl] += colorData[idx + 1];
+    sb[lbl] += colorData[idx + 2];
+    count[lbl]++;
+  }
+  const colors = new Array(numLabels).fill(null);
+  for (let i = 1; i < numLabels; i++) {
+    if (count[i] > 0) colors[i] = [sr[i] / count[i], sg[i] / count[i], sb[i] / count[i]];
+  }
+  return colors;
+}
+
+function colorDistance(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+// Thickness alone can't separate walls from furniture/fixture icons once
+// those are drawn with a similarly bold stroke (common in polished,
+// full-color floorplan renders). When the image color-codes walls
+// distinctly (e.g. navy blue walls vs. gray/black fixture outlines), color
+// is a much stronger signal, so we use the largest thick component as a
+// reference wall color and drop any thick component that doesn't match it —
+// with a safety fallback that skips this entirely if it would gut most of
+// the wall ink, so plain black-and-white floorplans are unaffected.
+function filterComponentsByColor(colorData, labels, stats, thickLabels, numLabels, rows, cols) {
+  if (!colorData || thickLabels.size === 0) return thickLabels;
+
+  const labelData = labels.data32S;
+  const colorsByLabel = averageColorsPerLabel(colorData, labelData, numLabels);
+
+  let refLabel = -1,
+    refArea = -1;
+  for (const label of thickLabels) {
+    const area = stats.intAt(label, cv.CC_STAT_AREA);
+    if (area > refArea) {
+      refArea = area;
+      refLabel = label;
+    }
+  }
+  if (refLabel === -1 || !colorsByLabel[refLabel]) return thickLabels;
+  const refColor = colorsByLabel[refLabel];
+
+  let totalThickArea = 0;
+  let keptArea = 0;
+  const keptLabels = new Set();
+  for (const label of thickLabels) {
+    const area = stats.intAt(label, cv.CC_STAT_AREA);
+    totalThickArea += area;
+    const avg = colorsByLabel[label];
+    if (avg && colorDistance(avg, refColor) <= COLOR_MATCH_THRESHOLD) {
+      keptLabels.add(label);
+      keptArea += area;
+    }
+  }
+
+  if (totalThickArea === 0 || keptArea / totalThickArea < COLOR_FALLBACK_MIN_KEEP_FRACTION) {
+    return thickLabels; // doesn't look consistently color-coded — don't filter
+  }
+  return keptLabels;
+}
+
+function selectWallComponents(mask, labels, stats, numLabels, rows, cols, colorData) {
+  let thickLabels = splitComponentsByThickness(
+    mask,
+    labels,
+    stats,
+    numLabels,
+    rows,
+    cols,
+  );
+
+  thickLabels = filterComponentsByColor(
+    colorData,
+    labels,
+    stats,
+    thickLabels,
+    numLabels,
+    rows,
+    cols,
+  );
+
+  const wallData = new Uint8Array(rows * cols);
+  const labelData = labels.data32S;
   for (let p = 0; p < rows * cols; p++) {
-    if (maskData[p] && distData[p] * 2 >= cutoff) thickPixels[p] = 1;
+    if (thickLabels.has(labelData[p])) wallData[p] = 1;
   }
-  dist.delete();
-
-  return isolateDominantWallMass(thickPixels, rows, cols);
+  return wallData;
 }
 
 /* ---------- Window detection (holes in the wall stroke) ---------- */
@@ -441,10 +396,10 @@ function selectWallComponents(mask, labels, stats, numLabels, rows, cols) {
 // point-by-point along the skeleton, which washes out once the window sits in the
 // middle of an otherwise-thick, unbroken wall run.
 
-const WINDOW_MIN_ASPECT = 2.2; // long/short ratio required for a hole to read as a window slit, not a stray nick
-const WINDOW_MAX_SHORT_FACTOR = 1.6; // hole's short side must be <= this * wall thickness
-const WINDOW_MIN_LONG_FACTOR = 1.4; // hole's long side must be >= this * wall thickness
-const WINDOW_MAX_LONG_PX = 220; // hard ceiling so a room interior is never mistaken for a window
+const WINDOW_MIN_ASPECT = 1.2; // long/short ratio required for a hole to read as a window slit, not a stray nick
+const WINDOW_MAX_SHORT_FACTOR = 1.8; // hole's short side must be <= this * wall thickness
+const WINDOW_MIN_LONG_FACTOR = 1.0; // hole's long side must be >= this * wall thickness
+const WINDOW_MAX_LONG_PX = 280; // hard ceiling so a room interior is never mistaken for a window
 
 function estimateWallThickness(wallMat, rows, cols) {
   const dist = new cv.Mat();
@@ -601,6 +556,33 @@ function segmentMasks(canvas, image) {
       THRESH_C,
     );
 
+    // Colored floorplans (e.g. real-estate style renders) often draw walls in
+    // a distinct color (navy blue, etc.) while furniture/fixture icons share
+    // similar stroke *thickness* but a different hue (gray/black outlines).
+    // Thickness alone can't tell those apart, so we also crop+pad an RGB
+    // version of the same region, aligned pixel-for-pixel with `mask`, and use
+    // it below to filter components by color as well as thickness.
+    const srcRgb = new cv.Mat();
+    cv.cvtColor(src, srcRgb, cv.COLOR_RGBA2RGB);
+    const croppedColor = new cv.Mat.zeros(ch, cw, cv.CV_8UC3);
+    srcRgb.roi = new cv.Rect(left, top, cw, ch);
+    srcRgb.copyTo(croppedColor);
+    srcRgb.roi = new cv.Rect(0, 0, mCols, mRows);
+
+    const paddedColor = new cv.Mat(
+      ch + 2 * PAD,
+      cw + 2 * PAD,
+      cv.CV_8UC3,
+      new cv.Scalar(255, 255, 255),
+    );
+    paddedColor.roi = new cv.Rect(PAD, PAD, cw, ch);
+    croppedColor.copyTo(paddedColor);
+    paddedColor.roi = new cv.Rect(0, 0, paddedColor.cols, paddedColor.rows);
+    const colorData = new Uint8ClampedArray(paddedColor.data);
+    srcRgb.delete();
+    croppedColor.delete();
+    paddedColor.delete();
+
     const numLabels = cv.connectedComponentsWithStats(
       mask,
       labels,
@@ -611,14 +593,22 @@ function segmentMasks(canvas, image) {
     );
     ((rows = mask.rows), (cols = mask.cols));
 
-    const wallData = selectWallComponents(mask, labels, stats, numLabels, rows, cols);
+    const wallData = selectWallComponents(
+      mask,
+      labels,
+      stats,
+      numLabels,
+      rows,
+      cols,
+      colorData,
+    );
 
     const wallMat = new cv.Mat(rows, cols, cv.CV_8UC1);
     wallMat.data.set(wallData);
     const windows = findWindowHoles(wallMat, rows, cols);
     wallMat.delete();
 
-    return { wallData, windows, cols, rows };
+    return { wallData, windows, colorData, cols, rows };
   } finally {
     src.delete();
     gray.delete();
@@ -659,8 +649,8 @@ function skeletonizeAndTrace(binaryData, cols, rows) {
 // continuous (so a normal, solid wall gets built there) — Viewer3D is what
 // actually carves the window-height opening out of that solid wall later.
 
-const WINDOW_EXCLUDE_PAD = 4; // px: margin so stub artifacts hugging a window are reliably caught
-const WINDOW_SNAP_TOLERANCE = 10; // px: snap a window's bridge endpoint onto a real wall endpoint if one is close by
+const WINDOW_EXCLUDE_PAD = 5; // px: margin so stub artifacts hugging a window are reliably caught
+const WINDOW_SNAP_TOLERANCE = 15; // px: snap a window's bridge endpoint onto a real wall endpoint if one is close by
 
 function pointInWindowBox(pt, win, pad) {
   const dx = win.end[0] - win.start[0];
@@ -688,7 +678,7 @@ function edgeMostlyInsideWindows(edge, windows, pad) {
     for (const pt of edge.points) {
       if (pointInWindowBox(pt, win, pad)) insideCount++;
     }
-    if (insideCount / edge.points.length > 0.6) return true;
+    if (insideCount / edge.points.length > 0.2) return true;
   }
   return false;
 }
@@ -723,10 +713,10 @@ function snapToNearestEndpoint(pt, edges, tolerance) {
 // happens to span on screen.
 
 const ARC_RESAMPLE_STEP_PX = 8; // spacing between smoothed sample points along the raw skeleton chain
-const ARC_MIN_SAMPLES = 4; // need several resampled points before curvature is even measurable
-const ARC_MAX_AVG_TURN = (45 * Math.PI) / 180; // radians (~45°) per resampled step; real corners jump close to 90° in one step, curve steps stay well under this
-const ARC_MIN_TOTAL_ABS_TURN = (40 * Math.PI) / 180; // radians (~40°): total curvature must be substantial, not just skeleton jitter on a straight run
-const ARC_MAX_SINGLE_TURN_FRACTION = 0.35; // no single resampled turn may account for more than this share of the total — real corners concentrate ~all their turning in one step, a curve spreads it out
+const ARC_MIN_SAMPLES = 8; // need several resampled points before curvature is even measurable
+const ARC_MAX_AVG_TURN = (35 * Math.PI) / 180; // radians (~45°) per resampled step; real corners jump close to 90° in one step, curve steps stay well under this
+const ARC_MIN_TOTAL_ABS_TURN = (30 * Math.PI) / 180; // radians (~40°): total curvature must be substantial, not just skeleton jitter on a straight run
+const ARC_MAX_SINGLE_TURN_FRACTION = 0.25; // no single resampled turn may account for more than this share of the total — real corners concentrate ~all their turning in one step, a curve spreads it out
 
 // Smooth + resample the raw skeleton chain at an even spacing. This has to be
 // a genuine moving-average (not just picking/interpolating between the two
@@ -825,10 +815,112 @@ function isDoorSwingArc(rawPoints, closed) {
 }
 
 
+/* ---------- Gap-based window detection ---------- */
+// Some floorplan styles (colored real-estate renders especially) draw a
+// window as a lighter/different-colored fill within the wall band. That
+// fill often doesn't pass the dark-ink threshold at all, so instead of a
+// hole with a border (see findWindowHoles above), the wall skeleton just
+// has a genuine break there — two dangling wall ends with nothing tracing
+// between them, the same shape a doorway leaves. What tells them apart is
+// that a real door normally has a swing arc; a broken run with NO nearby
+// door arc, roughly continuing the wall's own direction, is treated as a
+// window instead.
+
+const GAP_WINDOW_MIN_PX = 4;
+const GAP_WINDOW_MAX_PX = 60; // cap so we don't bridge across an actual missing wall / disconnected room
+const GAP_WINDOW_COLINEAR_TOLERANCE_DEG = 10; // how closely the gap must continue the wall's own direction
+const GAP_WINDOW_DOOR_EXCLUDE_PX = 15; // a rejected door-arc anchor this close means "that's a door, not a window"
+
+function edgeDirectionAt(edge, atStart) {
+  const pts = edge.points;
+  if (pts.length < 2) return null;
+  const [a, b] = atStart ? [pts[0], pts[1]] : [pts[pts.length - 1], pts[pts.length - 2]];
+  const dx = b[0] - a[0],
+    dy = b[1] - a[1]; // points back into the wall, away from the open end
+  const len = Math.hypot(dx, dy) || 1;
+  return [dx / len, dy / len];
+}
+
+function findDanglingEndpoints(edges, inBounds) {
+  const endpoints = [];
+  for (const edge of edges) {
+    if (edge.closed || edge.points.length < 2) continue;
+    endpoints.push({ point: edge.points[0], edge, atStart: true });
+    endpoints.push({
+      point: edge.points[edge.points.length - 1],
+      edge,
+      atStart: false,
+    });
+  }
+  const dangling = [];
+  for (const ep of endpoints) {
+    if (!inBounds(ep.point)) continue;
+    const shared = endpoints.some(
+      (other) =>
+        other !== ep &&
+        Math.hypot(other.point[0] - ep.point[0], other.point[1] - ep.point[1]) < 3,
+    );
+    if (!shared) dangling.push(ep);
+  }
+  return dangling;
+}
+
+function findGapWindows(wallEdges, doorArcAnchors, inBounds) {
+  const dangling = findDanglingEndpoints(wallEdges, inBounds);
+  const used = new Array(dangling.length).fill(false);
+  const windows = [];
+
+  for (let i = 0; i < dangling.length; i++) {
+    if (used[i]) continue;
+    const a = dangling[i];
+    const dirA = edgeDirectionAt(a.edge, a.atStart);
+    if (!dirA) continue;
+
+    let bestJ = -1,
+      bestDist = Infinity;
+    for (let j = 0; j < dangling.length; j++) {
+      if (i === j || used[j]) continue;
+      const b = dangling[j];
+      if (b.edge === a.edge) continue;
+      const dist = Math.hypot(b.point[0] - a.point[0], b.point[1] - a.point[1]);
+      if (dist < GAP_WINDOW_MIN_PX || dist > GAP_WINDOW_MAX_PX) continue;
+      const gapDirX = (b.point[0] - a.point[0]) / dist;
+      const gapDirY = (b.point[1] - a.point[1]) / dist;
+      const cosAngle = Math.min(
+        1,
+        Math.max(-1, -(dirA[0] * gapDirX + dirA[1] * gapDirY)),
+      );
+      const angDeg = (Math.acos(cosAngle) * 180) / Math.PI;
+      if (angDeg > GAP_WINDOW_COLINEAR_TOLERANCE_DEG) continue;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestJ = j;
+      }
+    }
+    if (bestJ === -1) continue;
+    const b = dangling[bestJ];
+
+    const nearDoor = doorArcAnchors.some(
+      (anchor) =>
+        Math.hypot(anchor[0] - a.point[0], anchor[1] - a.point[1]) <
+          GAP_WINDOW_DOOR_EXCLUDE_PX ||
+        Math.hypot(anchor[0] - b.point[0], anchor[1] - b.point[1]) <
+          GAP_WINDOW_DOOR_EXCLUDE_PX,
+    );
+    if (nearDoor) continue;
+
+    used[i] = true;
+    used[bestJ] = true;
+    windows.push({ start: a.point, end: b.point, width: null });
+  }
+  return windows;
+}
+
 function extractWallGraph(canvas, image) {
   const {
     wallData,
     windows: rawWindows,
+    colorData,
     cols,
     rows,
   } = segmentMasks(canvas, image);
@@ -841,8 +933,14 @@ function extractWallGraph(canvas, image) {
 
   const finalEdges = [];
   const cornerNodeSet = new Set();
+  const doorArcAnchors = [];
   for (const raw of rawWallEdges) {
-    if (isDoorSwingArc(raw.points, raw.closed)) continue; // curved door-swing line, not a wall
+    if (isDoorSwingArc(raw.points, raw.closed)) {
+      if (!raw.closed && raw.points.length >= 2) {
+        doorArcAnchors.push(raw.points[0], raw.points[raw.points.length - 1]);
+      }
+      continue; // curved door-swing line, not a wall
+    }
     const simplified = {
       points: simplifyChain(raw.points, raw.closed),
       closed: raw.closed,
@@ -869,12 +967,18 @@ function extractWallGraph(canvas, image) {
     (edge) => !edgeMostlyInsideWindows(edge, windows, WINDOW_EXCLUDE_PAD),
   );
 
+  // Gap-based windows (see above) come from wall runs that are already
+  // broken in the traced graph, so there's no stub artifact to strip — just
+  // find them directly on wallEdgesOnly.
+  const gapWindows = findGapWindows(wallEdgesOnly, doorArcAnchors, inBounds);
+  const allWindows = [...windows, ...gapWindows];
+
   // Re-bridge across each window with a single straight edge so the wall path
   // stays unbroken (solid wall gets built there; the opening itself is cut in
   // Viewer3D at window height, not by leaving a full floor-to-ceiling gap
   // here). Snap bridge endpoints onto real wall endpoints nearby so the joint
   // lines up exactly instead of leaving a hairline seam.
-  const bridgeEdges = windows.map((win) => ({
+  const bridgeEdges = allWindows.map((win) => ({
     points: [
       snapToNearestEndpoint(win.start, wallEdgesOnly, WINDOW_SNAP_TOLERANCE),
       snapToNearestEndpoint(win.end, wallEdgesOnly, WINDOW_SNAP_TOLERANCE),
@@ -897,7 +1001,7 @@ function extractWallGraph(canvas, image) {
     validNodeSet.has(`${nx},${ny}`),
   );
 
-  return { edges: filteredEdges, nodes: filteredNodes, windows };
+  return { edges: filteredEdges, nodes: filteredNodes, windows: allWindows };
 }
 
 
