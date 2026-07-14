@@ -10,6 +10,7 @@ export default function UploadPage() {
   const [active, setActive] = useState(null);
   const [loadingRecent, setLoadingRecent] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [reseedStatus, setReseedStatus] = useState(null); // { type, text }
 
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
@@ -48,7 +49,8 @@ export default function UploadPage() {
     checkAuth().then((u) => {
       if (u) loadRecent();
     });
-    const onAuthChange = () => checkAuth().then((u) => (u ? loadRecent() : setRecent([])));
+    const onAuthChange = () =>
+      checkAuth().then((u) => (u ? loadRecent() : setRecent([])));
     window.addEventListener("auth-changed", onAuthChange);
     return () => window.removeEventListener("auth-changed", onAuthChange);
   }, [checkAuth, loadRecent]);
@@ -56,7 +58,9 @@ export default function UploadPage() {
   async function deleteOne(bp) {
     setDeleting(true);
     try {
-      const res = await fetch(`/api/blueprints?id=${bp.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/blueprints?id=${bp.id}`, {
+        method: "DELETE",
+      });
       if (res.ok) {
         setRecent((r) => r.filter((x) => x.id !== bp.id));
         if (active?.id === bp.id) setActive(null);
@@ -76,6 +80,27 @@ export default function UploadPage() {
       }
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function reseedModels() {
+    setReseedStatus({ type: "loading" });
+    try {
+      const res = await fetch("/api/models/reseed", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setReseedStatus({
+          type: "ok",
+          text: `Reseeded ${data.reseeded} seeded models.`,
+        });
+      } else {
+        setReseedStatus({
+          type: "error",
+          text: data.message || "Reseed failed.",
+        });
+      }
+    } catch {
+      setReseedStatus({ type: "error", text: "Network error during reseed." });
     }
   }
 
@@ -119,24 +144,44 @@ export default function UploadPage() {
   // ---- Not logged in gate ----
   if (user === null) {
     return (
-      <div className="container" style={{ padding: "80px 24px", textAlign: "center" }}>
+      <div
+        className="container"
+        style={{ padding: "80px 24px", textAlign: "center" }}
+      >
         <span className="eyebrow" style={{ justifyContent: "center" }}>
           Restricted
         </span>
-        <h1 style={{ fontSize: 34, marginTop: 16 }}>Log in to upload blueprints</h1>
+        <h1 style={{ fontSize: 34, marginTop: 16 }}>
+          Log in to upload blueprints
+        </h1>
         <p style={{ color: "var(--ink-soft)", marginTop: 12 }}>
           Your uploads are saved to your account, so you need to be signed in.
         </p>
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 24 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            justifyContent: "center",
+            marginTop: 24,
+          }}
+        >
           <button
             className="btn btn-accent"
-            onClick={() => window.dispatchEvent(new CustomEvent("open-auth", { detail: "register" }))}
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("open-auth", { detail: "register" }),
+              )
+            }
           >
             Register
           </button>
           <button
             className="btn btn-ghost"
-            onClick={() => window.dispatchEvent(new CustomEvent("open-auth", { detail: "login" }))}
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("open-auth", { detail: "login" }),
+              )
+            }
           >
             Log in
           </button>
@@ -149,7 +194,15 @@ export default function UploadPage() {
   if (user === undefined) {
     return (
       <div className="container" style={{ padding: "80px 24px" }}>
-        <p style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--ink-faint)" }}>Loading…</p>
+        <p
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 13,
+            color: "var(--ink-faint)",
+          }}
+        >
+          Loading…
+        </p>
       </div>
     );
   }
@@ -160,8 +213,42 @@ export default function UploadPage() {
       <span className="eyebrow">Upload &amp; View</span>
       <h1 style={{ fontSize: 32, marginTop: 14 }}>Your workspace</h1>
       <p style={{ color: "var(--ink-soft)", marginTop: 8, marginBottom: 28 }}>
-        Signed in as {user.name}. Drop a blueprint below — it saves to your account and opens in the viewport.
+        Signed in as {user.name}. Drop a blueprint below — it saves to your
+        account and opens in the viewport.
       </p>
+
+      {/* Model reseed control */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        <button
+          className="btn btn-ghost"
+          onClick={reseedModels}
+          disabled={reseedStatus?.type === "loading"}
+        >
+          {reseedStatus?.type === "loading"
+            ? "Reseeding…"
+            : "Reseed sample 3D models"}
+        </button>
+        {reseedStatus && reseedStatus.type !== "loading" && (
+          <span
+            className={`alert ${reseedStatus.type === "ok" ? "alert-ok" : "alert-error"}`}
+            style={{
+              display: "inline-block",
+              margin: 0,
+              fontSize: 13,
+              padding: "6px 12px",
+            }}
+          >
+            {reseedStatus.text}
+          </span>
+        )}
+      </div>
 
       <div
         style={{
@@ -173,7 +260,14 @@ export default function UploadPage() {
         className="workspace-grid"
       >
         {/* Left: recent */}
-        <RecentPanel items={recent} activeId={active?.id} onSelect={setActive} loading={loadingRecent} onClear={clearAll} onDelete={deleteOne} />
+        <RecentPanel
+          items={recent}
+          activeId={active?.id}
+          onSelect={setActive}
+          loading={loadingRecent}
+          onClear={clearAll}
+          onDelete={deleteOne}
+        />
 
         {/* Right: uploader + viewer */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -194,11 +288,20 @@ export default function UploadPage() {
               padding: 20,
               borderStyle: "dashed",
               borderColor: dragging ? "var(--accent)" : "var(--line-strong)",
-              background: dragging ? "var(--accent-wash)" : "var(--paper-raised)",
+              background: dragging
+                ? "var(--accent-wash)"
+                : "var(--paper-raised)",
               transition: "border-color 0.15s ease, background 0.15s ease",
             }}
           >
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 16,
+                flexWrap: "wrap",
+                alignItems: "flex-end",
+              }}
+            >
               <div style={{ flex: "1 1 200px", minWidth: 180 }}>
                 <div className="field">
                   <label>Title (optional)</label>
@@ -223,7 +326,11 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              <button className="btn btn-accent" onClick={upload} disabled={uploading}>
+              <button
+                className="btn btn-accent"
+                onClick={upload}
+                disabled={uploading}
+              >
                 {uploading ? "Uploading…" : "Upload blueprint"}
               </button>
             </div>
@@ -237,11 +344,16 @@ export default function UploadPage() {
                 marginBottom: 0,
               }}
             >
-              {file ? `Selected: ${file.name}` : "Drag a file here, or browse. Images, PDF, or 3D models up to 25 MB."}
+              {file
+                ? `Selected: ${file.name}`
+                : "Drag a file here, or browse. Images, PDF, or 3D models up to 25 MB."}
             </p>
 
             {msg && (
-              <div className={`alert ${msg.type === "ok" ? "alert-ok" : "alert-error"}`} style={{ marginTop: 12 }}>
+              <div
+                className={`alert ${msg.type === "ok" ? "alert-ok" : "alert-error"}`}
+                style={{ marginTop: 12 }}
+              >
                 {msg.text}
               </div>
             )}
