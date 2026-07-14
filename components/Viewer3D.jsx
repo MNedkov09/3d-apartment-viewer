@@ -183,10 +183,12 @@ async function fetchUserModels() {
     const res = await fetch("/api/models?limit=100");
     if (!res.ok) return [];
     const data = await res.json();
-    // API returns objects with extra DB fields — the viewer only needs name/url.
+    // Keep thumbnail alongside name/url so the sidebar can render a
+    // preview icon instead of a bare text row.
     return (data.models || []).map((m) => ({
       name: m.name,
       url: m.file_path,
+      thumbnail: m.thumbnail_path,
     }));
   } catch {
     return [];
@@ -362,8 +364,8 @@ function ModelPanel({
             border: "1px solid transparent",
             transition: "background 0.1s",
             display: "flex",
-            justifyContent: "space-between",
             alignItems: "center",
+            gap: 8,
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = "rgba(255,255,255,0.1)";
@@ -372,8 +374,23 @@ function ModelPanel({
             e.currentTarget.style.background = "rgba(255,255,255,0.05)";
           }}
         >
+          {m.thumbnail ? (
+            <img
+              src={m.thumbnail}
+              alt=""
+              width={40}
+              height={40}
+              style={{ flexShrink: 0, objectFit: "contain" }}
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          ) : (
+            <div style={{ width: 20, height: 20, flexShrink: 0 }} />
+          )}
           <span
             style={{
+              flex: 1,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -388,7 +405,6 @@ function ModelPanel({
               padding: "1px 5px",
               borderRadius: 3,
               flexShrink: 0,
-              marginLeft: 6,
             }}
           >
             +
@@ -592,6 +608,8 @@ export default function Viewer3D({
   // Store edges/windows as refs so export can access them
   const edgesRef = useRef([]);
   const windowsRef = useRef([]);
+  const containerRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [availableModels, setAvailableModels] = useState([]);
   const [placedModels, setPlacedModels] = useState([]);
@@ -621,6 +639,34 @@ export default function Viewer3D({
   // effect), which meant handleExportScene referenced a `const` that hadn't
   // been initialized yet in this render pass — a TDZ ReferenceError
   // ("Cannot access 'cameraDistance' before initialization") on every render.
+  const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().catch((err) => {
+        console.warn("Fullscreen request failed:", err.message);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const active = document.fullscreenElement === containerRef.current;
+      setIsFullscreen(active);
+      // The canvas's actual pixel size changes when the browser goes
+      // fullscreen, but Babylon doesn't know that on its own — it only
+      // resizes on the window "resize" event, which the Fullscreen API
+      // doesn't reliably fire. Kick the engine explicitly.
+      requestAnimationFrame(() => {
+        engineRef.current?.resize();
+      });
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
   const cameraDistance = useMemo(() => {
     if (!edges || edges.length === 0) return 10;
     let maxExtent = 1;
@@ -1532,12 +1578,14 @@ export default function Viewer3D({
 
   return (
     <div
+      ref={containerRef}
       style={{
         width: "100%",
-        height: 500,
+        height: isFullscreen ? "100vh" : 500,
         display: "flex",
         background: "#87ceeb",
         cursor: draggedModel ? "grabbing" : "crosshair",
+        position: "relative",
       }}
     >
       <div
@@ -1571,6 +1619,25 @@ export default function Viewer3D({
             Loading 3D scene...
           </div>
         )}
+        <button
+          onClick={toggleFullscreen}
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            background: "rgba(0,0,0,0.5)",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.3)",
+            borderRadius: 4,
+            padding: "6px 10px",
+            fontSize: 12,
+            cursor: "pointer",
+            fontFamily: "sans-serif",
+          }}
+        >
+          {isFullscreen ? "⤓ Exit" : "⤢ Fullscreen"}
+        </button>
         <div
           style={{
             position: "absolute",

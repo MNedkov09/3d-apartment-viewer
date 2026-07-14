@@ -56,7 +56,17 @@ export default function UploadPage() {
     return () => window.removeEventListener("auth-changed", onAuthChange);
   }, [checkAuth, loadRecent]);
 
-  // Auto-seed sample 3D models on page load (once).
+  // Auto-seed sample 3D models on page load — once per mount only.
+  //
+  // FIX: the original version dispatched "auth-changed" on success, which
+  // re-ran checkAuth(), which called setUser() with a brand-new object
+  // reference every time — and this effect depended on `user`, so it fired
+  // again, reseeded again, dispatched again... an infinite loop that
+  // showed up as endless auth/blueprints/reseed spam in the server log.
+  //
+  // Fix: reseedRanRef makes this run exactly once per page load, and on
+  // success it refreshes the list directly via loadRecent() instead of
+  // bouncing back through the auth-changed event.
   useEffect(() => {
     if (!user || reseedRanRef.current) return;
     reseedRanRef.current = true;
