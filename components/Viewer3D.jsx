@@ -546,8 +546,13 @@ function ModelPanel({
                 )}
                 {onRemovePlacedModel && (
                   <button
-                    onClick={() => onRemovePlacedModel(m)}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onRemovePlacedModel(m);
+                    }}
                     title="Remove from scene"
+                    type="button"
                     style={{
                       background: "rgba(255,80,80,0.2)",
                       color: "#fff",
@@ -557,6 +562,10 @@ function ModelPanel({
                       height: 18,
                       fontSize: 10,
                       lineHeight: 1,
+                      padding: 0,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       cursor: "pointer",
                       flexShrink: 0,
                       fontStyle: "normal",
@@ -1067,9 +1076,19 @@ export default function Viewer3D({
     // Delete / Backspace: remove the currently selected model from the
     // scene. Selection is set on click (see onPointerDown) and persists
     // after you release the mouse — you don't need to be actively
-    // dragging, just to have clicked a model beforehand.
+    // dragging, just to have clicked a model beforehand. If the user is
+    // dragging, prefer the dragged root so Delete works immediately mid-drag.
     if (e.key === "Delete" || e.key === "Backspace") {
-      const root = selectedMeshRef.current;
+      const root = isDraggingRef.current
+        ? draggedMeshRef.current
+        : selectedMeshRef.current;
+      console.log("[Viewer3D] delete key", {
+        key: e.key,
+        isDragging: isDraggingRef.current,
+        hasDraggedMesh: !!draggedMeshRef.current,
+        hasSelectedMesh: !!selectedMeshRef.current,
+        rootName: root?.name ?? null,
+      });
       if (!root) return;
 
       // Don't let Backspace delete a model while the user is typing in an
@@ -1084,7 +1103,15 @@ export default function Viewer3D({
       // for anything that's actually a placed, selected model.
       const mapping = meshToModelRef.current.get(root);
       if (mapping) {
+        console.log("[Viewer3D] deleting model", {
+          name: mapping.entry?.name,
+          url: mapping.entry?.url,
+        });
         removePlacedModelRef.current(mapping.entry);
+      } else {
+        console.log("[Viewer3D] delete key had no model mapping", {
+          rootName: root?.name ?? null,
+        });
       }
       return;
     }
@@ -1304,6 +1331,7 @@ export default function Viewer3D({
             rotation: [0, 0, 0],
             scaling: [1, 1, 1],
             url,
+            mesh: root,
           };
 
           for (const m of newMeshes) {
@@ -1312,7 +1340,7 @@ export default function Viewer3D({
 
           yawAngleRef.current.set(root, 0);
 
-          setPlacedModels((prev) => [...prev, { ...entry, mesh: root }]);
+          setPlacedModels((prev) => [...prev, entry]);
         },
         undefined,
         () => {
@@ -1324,7 +1352,11 @@ export default function Viewer3D({
   );
 
   const removePlacedModel = useCallback((entryToRemove) => {
-    const root = entryToRemove.mesh;
+    const root =
+      entryToRemove.mesh ||
+      [...meshToModelRef.current.values()].find(
+        (mapping) => mapping.entry === entryToRemove,
+      )?.root;
     if (!root) return;
 
     for (const [mesh, mapping] of meshToModelRef.current.entries()) {
@@ -1341,6 +1373,8 @@ export default function Viewer3D({
       draggedMeshRef.current = null;
       isDraggingRef.current = false;
       setDraggedModel(null);
+      cameraRef.current?.attachControl(canvasRef.current, true);
+      if (canvasRef.current) canvasRef.current.style.cursor = "crosshair";
     }
 
     try {
@@ -1571,6 +1605,10 @@ export default function Viewer3D({
       dragOffsetRef.current.copyFrom(hitPoint);
       dragStartPosRef.current.copyFrom(root.position);
       setDraggedModel(mapping.entry);
+      console.log("[Viewer3D] drag start", {
+        name: mapping.entry?.name,
+        rootName: root.name,
+      });
 
       // Always store the current quaternion as the base for next rotation
       modelRotationRef.current.set(root, {
@@ -1639,6 +1677,9 @@ export default function Viewer3D({
       }
 
       // Clear refs AFTER using them above
+      console.log("[Viewer3D] drag end", {
+        rootName: mesh?.name ?? null,
+      });
       draggedMeshRef.current = null;
       canvasRef.current.style.cursor = "crosshair";
     };
