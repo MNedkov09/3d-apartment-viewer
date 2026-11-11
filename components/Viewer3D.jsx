@@ -1502,35 +1502,35 @@ export default function Viewer3D({
         cam.radius = 0.5;
         cam.target.set(bounds.cx, 1.45, bounds.cz);
       } else if (mode === "living") {
-        cam.alpha = -Math.PI / 3;
-        cam.beta = Math.PI / 3.2;
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
         cam.radius = cameraDistance * 0.45;
-        cam.target.set(bounds.cx - bounds.w * 0.28, 1.2, bounds.cz + bounds.d * 0.18);
+        cam.target.set(bounds.cx - bounds.w * 0.28, 0, bounds.cz + bounds.d * 0.18);
       } else if (mode === "kitchen") {
-        cam.alpha = -Math.PI / 1.3;
-        cam.beta = Math.PI / 3.2;
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
         cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx + bounds.w * 0.24, 1.2, bounds.cz + bounds.d * 0.18);
+        cam.target.set(bounds.cx + bounds.w * 0.24, 0, bounds.cz + bounds.d * 0.18);
       } else if (mode === "master_bed") {
-        cam.alpha = -Math.PI / 1.5;
-        cam.beta = Math.PI / 3.2;
-        cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx + bounds.w * 0.26, 1.2, bounds.cz - bounds.d * 0.25);
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
+        cam.radius = cameraDistance * 0.40;
+        cam.target.set(bounds.cx + bounds.w * 0.26, 0, bounds.cz - bounds.d * 0.25);
       } else if (mode === "bed_2") {
-        cam.alpha = -Math.PI / 3;
-        cam.beta = Math.PI / 3.2;
-        cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx - bounds.w * 0.05, 1.2, bounds.cz - bounds.d * 0.25);
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
+        cam.radius = cameraDistance * 0.38;
+        cam.target.set(bounds.cx - bounds.w * 0.05, 0, bounds.cz - bounds.d * 0.25);
       } else if (mode === "bath") {
-        cam.alpha = -Math.PI / 2.4;
-        cam.beta = Math.PI / 3.0;
-        cam.radius = cameraDistance * 0.32;
-        cam.target.set(bounds.cx - bounds.w * 0.06, 1.2, bounds.cz - bounds.d * 0.02);
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
+        cam.radius = cameraDistance * 0.30;
+        cam.target.set(bounds.cx - bounds.w * 0.06, 0, bounds.cz - bounds.d * 0.02);
       } else if (mode === "entry") {
         cam.alpha = -Math.PI / 2;
-        cam.beta = Math.PI / 3.2;
-        cam.radius = cameraDistance * 0.38;
-        cam.target.set(bounds.cx - bounds.w * 0.02, 1.2, bounds.cz + bounds.d * 0.38);
+        cam.beta = 0.04;
+        cam.radius = cameraDistance * 0.34;
+        cam.target.set(bounds.cx - bounds.w * 0.02, 0, bounds.cz + bounds.d * 0.38);
       }
     },
     [bounds, cameraDistance, wallHeightMeters],
