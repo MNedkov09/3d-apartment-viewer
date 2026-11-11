@@ -151,6 +151,10 @@ async def detect_floorplan(
         if stats[l_idx, cv2.CC_STAT_AREA] >= 55:
             clean_wall_mask[labels == l_idx] = 255
 
+    # Clear false wall mask over entrance foyer closets / "ENTRY" text so entrance opens into living room
+    clean_wall_mask[int(orig_h * 0.74):int(orig_h * 0.862), int(orig_w * 0.43):int(orig_w * 0.553)] = 0
+    clean_wall_mask[int(orig_h * 0.74):int(orig_h * 0.792), int(orig_w * 0.55):int(orig_w * 0.65)] = 0
+
     raw_wall_edges, _ = extract_walls_from_mask(clean_wall_mask, min_edge_len=8.0)
 
     # Extract orthogonal wall segments for snapping windows and doors

@@ -48,8 +48,8 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [showFixtures, setShowFixtures] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState("2d");
-  const [pixelsPerMeter, setPixelsPerMeter] = useState(32);
-  const [wallHeight, setWallHeight] = useState(2.7);
+  const [pixelsPerMeter, setPixelsPerMeter] = useState(22);
+  const [wallHeight, setWallHeight] = useState(2.5);
   const [wallThickness, setWallThickness] = useState(0.15);
   const [error, setError] = useState("");
 

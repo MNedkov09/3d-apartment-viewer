@@ -810,7 +810,7 @@ function cutDoorOpenings(doors, wallMeshes, opts, scene) {
       {
         width: wallThickness * 3.5,
         height: cutHeight,
-        depth: openingLength + 0.06,
+        depth: openingLength + 0.22,
       },
       scene,
     );
@@ -1583,15 +1583,15 @@ function RightSidePanel({
           >
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "rgba(255,255,255,0.6)" }}>Scale Ratio:</span>
-              <span style={{ fontWeight: 600 }}>32 px / meter</span>
+              <span style={{ fontWeight: 600 }}>22 px / meter</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "rgba(255,255,255,0.6)" }}>Apartment Footprint:</span>
-              <span style={{ fontWeight: 600 }}>~16.2m × 11.2m</span>
+              <span style={{ fontWeight: 600 }}>~23.0m × 15.3m</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "rgba(255,255,255,0.6)" }}>Wall Height:</span>
-              <span style={{ fontWeight: 600 }}>2.70 meters</span>
+              <span style={{ fontWeight: 600 }}>2.50 meters</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "rgba(255,255,255,0.6)" }}>Placed Furniture:</span>
@@ -1622,10 +1622,10 @@ export default function Viewer3D({
   doors = [],
   furniture = [],
   fixtures = [],
-  pixelsPerMeter = 32,
-  wallHeightMeters = 2.7,
+  pixelsPerMeter = 22,
+  wallHeightMeters = 2.5,
   wallThicknessMeters = 0.15,
-  sillHeightMeters = 0.9,
+  sillHeightMeters = 0.85,
   windowHeightMeters = 1.2,
   stats,
 }) {
@@ -1720,9 +1720,11 @@ export default function Viewer3D({
       setViewpointState(mode);
 
       if (mode === "walk") {
-        cam.lowerRadiusLimit = 0.25;
-        cam.upperBetaLimit = Math.PI / 1.92;
+        cam.fov = 1.08; // Wide-angle architectural interior lens (~90° horizontal FOV)
+        cam.lowerRadiusLimit = 0.12;
+        cam.upperBetaLimit = Math.PI / 1.90;
       } else {
+        cam.fov = 0.86;
         cam.lowerRadiusLimit = 1.6;
         cam.upperBetaLimit = Math.PI / 2 - 0.08;
       }
@@ -1735,13 +1737,14 @@ export default function Viewer3D({
       } else if (mode === "iso") {
         cam.alpha = -Math.PI / 4;
         cam.beta = Math.PI / 3.4;
-        cam.radius = cameraDistance * 1.1;
+        cam.radius = cameraDistance * 1.05;
         cam.target.set(bounds.cx, 1.2, bounds.cz);
       } else if (mode === "walk") {
-        cam.alpha = -Math.PI / 4;
-        cam.beta = Math.PI / 2.08;
-        cam.radius = 0.35;
-        cam.target.set(bounds.cx, 1.45, bounds.cz);
+        // Spawn in the open Living/Dining foyer facing across the apartment (never inside a wall)
+        cam.alpha = -Math.PI / 2;
+        cam.beta = Math.PI / 2.02;
+        cam.radius = 0.15;
+        cam.target.set(bounds.cx - bounds.w * 0.04, 1.30, bounds.cz + bounds.d * 0.22);
       } else if (mode === "living") {
         cam.alpha = -Math.PI / 2;
         cam.beta = 0.04;
@@ -1771,7 +1774,7 @@ export default function Viewer3D({
         cam.alpha = -Math.PI / 2;
         cam.beta = 0.04;
         cam.radius = cameraDistance * 0.34;
-        cam.target.set(bounds.cx - bounds.w * 0.02, 1.0, bounds.cz + bounds.d * 0.38);
+        cam.target.set(bounds.cx - bounds.w * 0.02, 1.0, bounds.cz + bounds.d * 0.32);
       }
     },
     [bounds, cameraDistance, wallHeightMeters],
@@ -2078,6 +2081,7 @@ export default function Viewer3D({
     );
     cameraRef.current = camera;
     camera.attachControl(canvasRef.current, true);
+    camera.fov = 0.86;
     camera.lowerRadiusLimit = 1.6; // Prevents zooming into the floor or clipping walls
     camera.upperRadiusLimit = cameraDistance * 1.85; // Prevents zooming out into empty space
     camera.lowerBetaLimit = 0.04;
