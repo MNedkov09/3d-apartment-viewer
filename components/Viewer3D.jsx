@@ -9,6 +9,7 @@ import {
   Color4,
   PBRMaterial,
   StandardMaterial,
+  DynamicTexture,
   MeshBuilder,
   ArcRotateCamera,
   ShadowGenerator,
@@ -16,28 +17,16 @@ import {
   Matrix,
   CSG,
   Quaternion,
-  Space,
+  TransformNode,
+  Plane,
 } from "@babylonjs/core";
-import { Plane } from "@babylonjs/core";
 import { GLTFFileLoader } from "@babylonjs/loaders";
 import { buildWallMeshes } from "./wallGeometry";
 
-// Register the GLTF loader once at module load time (global Babylon.js singleton).
+// Register the GLTF loader once at module load time
 SceneLoader.RegisterPlugin(new GLTFFileLoader());
-
-// SceneLoader.Append shows Babylon's default black-screen-with-logo loading
-// UI automatically while an asset loads. For small GLTF files this loads
-// fast enough that all you see is a jarring flash. This flag turns that
-// automatic behavior off entirely — you can add your own loading indicator
-// separately if you want one, but this stops the flash.
 SceneLoader.ShowLoadingScreen = false;
 
-/**
- * Cast a ray from the camera through a given canvas pixel and intersect it
- * with the horizontal ground plane at height `flrY`. Used for BOTH placing
- * a new model (ray through canvas center) and dragging an existing one
- * (ray through the cursor) — same math, different pixel coordinates.
- */
 function rayGroundIntersect(scene, cam, canvas, flrY, ptrX, ptrY) {
   const ray = scene.createPickingRay(
     ptrX ?? canvas.clientWidth / 2,
@@ -74,37 +63,166 @@ function computeBounds(edges, pixelsPerMeter) {
   return {
     cx: ((minX + maxX) / 2) * scale,
     cz: ((minY + maxY) / 2) * scale,
-    w: (maxX - minX) * scale,
-    d: (maxY - minY) * scale,
+    w: Math.max((maxX - minX) * scale, 4),
+    d: Math.max((maxY - minY) * scale, 4),
   };
 }
-/**
- * Carve rectangular window openings into already-built wall meshes.
- *
- * The floorplan pipeline gives us each window as a straight segment in image
- * pixel space (`start`/`end`, same coordinate space as `edges`) plus its
- * opening width across the wall's thickness. It intentionally does NOT leave
- * a gap in the wall graph at the window — the wall path is bridged back to
- * continuous there so buildWallMeshes produces a normal, solid, full-height
- * wall segment. This function is what actually turns that solid stretch into
- * an opening: for each window, it builds a box sized to the window's plan
- * footprint and a configurable sill/head height, then CSG-subtracts that box
- * from any wall mesh whose bounding box overlaps it. This keeps the wall
- * solid below the sill and above the head, exactly as if a real window had
- * been installed in a solid wall.
- *
- * Runs once per (re)build, not per frame — CSG is too slow for real-time use,
- * but is fine for a handful of one-off subtractions when the scene loads.
- */
+
+function createFloorMaterial(style = "wood", scene) {
+  const mat = new PBRMaterial(`floorMat_${style}`, scene);
+  const tex = new DynamicTexture(`floorTex_${style}`, { width: 512, height: 512 }, scene, true);
+  const ctx = tex.getContext();
+
+  if (style === "wood") {
+    // Warm Scandinavian Oak Hardwood Parquet
+    ctx.fillStyle = "#dfc8a5";
+    ctx.fillRect(0, 0, 512, 512);
+
+    const plankH = 32;
+    for (let y = 0; y < 512; y += plankH) {
+      const plankW = 128;
+      const xOffset = ((y / plankH) % 2) * 64;
+      for (let x = -64; x < 512 + 64; x += plankW) {
+        const tone = 205 + Math.floor(Math.sin(x * 12 + y * 7) * 12);
+        ctx.fillStyle = `rgb(${tone + 18}, ${tone}, ${tone - 26})`;
+        ctx.fillRect(x + xOffset, y, plankW - 2, plankH - 2);
+
+        // Fine grain lines
+        ctx.fillStyle = "rgba(105, 75, 35, 0.08)";
+        ctx.fillRect(x + xOffset, y + 6, plankW - 2, 2);
+        ctx.fillRect(x + xOffset, y + 16, plankW - 2, 2);
+      }
+      ctx.fillStyle = "#9c815e";
+      ctx.fillRect(0, y + plankH - 2, 512, 2);
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 4;
+    mat.albedoTexture.vScale = 4;
+    mat.roughness = 0.42;
+    mat.metallic = 0.02;
+  } else if (style === "tile") {
+    // Modern Architectural Neutral Tile
+    ctx.fillStyle = "#b0b4b9";
+    ctx.fillRect(0, 0, 512, 512);
+    const tileSize = 128;
+    for (let y = 0; y < 512; y += tileSize) {
+      for (let x = 0; x < 512; x += tileSize) {
+        const tone = 230 + Math.floor(Math.cos(x + y) * 8);
+        ctx.fillStyle = `rgb(${tone}, ${tone}, ${tone})`;
+        ctx.fillRect(x + 2, y + 2, tileSize - 4, tileSize - 4);
+      }
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 4;
+    mat.albedoTexture.vScale = 4;
+    mat.roughness = 0.28;
+    mat.metallic = 0.08;
+  } else {
+    // Minimalist Contemporary Studio Concrete
+    mat.albedoColor = new Color3(0.90, 0.90, 0.88);
+    mat.roughness = 0.65;
+    mat.metallic = 0.02;
+  }
+  return mat;
+}
+
+function createBathroomFixtures(fixtures, opts, scene) {
+  if (!fixtures || fixtures.length === 0) return [];
+  const { scale } = opts;
+
+  const ceramicMat = new PBRMaterial("ceramicMat", scene);
+  ceramicMat.albedoColor = new Color3(0.96, 0.96, 0.96);
+  ceramicMat.metallic = 0.05;
+  ceramicMat.roughness = 0.15;
+
+  const chromeMat = new PBRMaterial("chromeMat", scene);
+  chromeMat.albedoColor = new Color3(0.85, 0.85, 0.85);
+  chromeMat.metallic = 0.95;
+  chromeMat.roughness = 0.1;
+
+  const glassMat = new PBRMaterial("showerGlassMat", scene);
+  glassMat.albedoColor = new Color3(0.7, 0.9, 1.0);
+  glassMat.alpha = 0.35;
+  glassMat.metallic = 0.05;
+  glassMat.roughness = 0.05;
+
+  const fixtureMeshes = [];
+  fixtures.forEach((f, i) => {
+    const canvasPt = f.canvas_center || f.center;
+    if (!canvasPt) return;
+    const cx = canvasPt[0] * scale;
+    const cz = canvasPt[1] * scale;
+
+    if (f.label === "toilet") {
+      const base = MeshBuilder.CreateCylinder(
+        `toilet_bowl_${i}`,
+        { diameterTop: 0.38, diameterBottom: 0.28, height: 0.42 },
+        scene,
+      );
+      base.position.set(cx, 0.21, cz);
+      base.material = ceramicMat;
+      base.castShadow = true;
+      base.receiveShadow = true;
+
+      const cistern = MeshBuilder.CreateBox(
+        `toilet_tank_${i}`,
+        { width: 0.42, depth: 0.22, height: 0.44 },
+        scene,
+      );
+      cistern.position.set(cx, 0.52, cz - 0.14);
+      cistern.material = ceramicMat;
+      cistern.castShadow = true;
+      cistern.receiveShadow = true;
+      fixtureMeshes.push(base, cistern);
+    } else if (f.label === "sink") {
+      const vanity = MeshBuilder.CreateBox(
+        `vanity_${i}`,
+        { width: 0.6, depth: 0.45, height: 0.82 },
+        scene,
+      );
+      vanity.position.set(cx, 0.41, cz);
+      vanity.material = ceramicMat;
+      vanity.castShadow = true;
+      vanity.receiveShadow = true;
+
+      const tap = MeshBuilder.CreateCylinder(
+        `tap_${i}`,
+        { diameter: 0.04, height: 0.16 },
+        scene,
+      );
+      tap.position.set(cx, 0.86, cz - 0.14);
+      tap.material = chromeMat;
+      tap.castShadow = true;
+      fixtureMeshes.push(vanity, tap);
+    } else if (f.label === "shower") {
+      const tray = MeshBuilder.CreateBox(
+        `shower_tray_${i}`,
+        { width: 0.85, depth: 0.85, height: 0.08 },
+        scene,
+      );
+      tray.position.set(cx, 0.04, cz);
+      tray.material = ceramicMat;
+      tray.receiveShadow = true;
+
+      const glass = MeshBuilder.CreateBox(
+        `shower_glass_${i}`,
+        { width: 0.85, depth: 0.04, height: 2.0 },
+        scene,
+      );
+      glass.position.set(cx, 1.04, cz + 0.4);
+      glass.material = glassMat;
+      glass.castShadow = true;
+      fixtureMeshes.push(tray, glass);
+    }
+  });
+
+  return fixtureMeshes;
+}
+
 function cutWindowOpenings(windows, wallMeshes, opts, scene) {
   const { scale, wallThickness, sillHeight, windowHeight, wallHeight } = opts;
-  const headHeight = sillHeight + windowHeight;
-  if (headHeight >= wallHeight) {
-    console.warn(
-      "Window head height reaches the ceiling — check sillHeightMeters/windowHeightMeters vs wallHeightMeters.",
-    );
-  }
-
   const remainingMeshes = [...wallMeshes];
 
   for (const win of windows) {
@@ -115,22 +233,19 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
     const dX = endX - startX;
     const dZ = endZ - startZ;
     const openingLength = Math.hypot(dX, dZ);
-    if (openingLength < 0.05) continue; // degenerate, skip
+    if (openingLength < 0.05) continue;
 
     const centerX = (startX + endX) / 2;
     const centerZ = (startZ + endZ) / 2;
-    const centerY = sillHeight + windowHeight / 2;
+    const centerY = Math.min(sillHeight + windowHeight / 2, wallHeight - 0.2);
     const angle = Math.atan2(dZ, dX);
 
-    // Cutter is intentionally oversized a little in every direction so it
-    // fully punches through the wall face instead of leaving razor-thin
-    // leftover slivers from floating-point misses at the boundary.
     const cutter = MeshBuilder.CreateBox(
       "windowCutter",
       {
         width: openingLength + 0.04,
         height: windowHeight,
-        depth: wallThickness * 2,
+        depth: wallThickness * 2.5,
       },
       scene,
     );
@@ -155,27 +270,25 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
         wallBounds.minimumWorld.z <= cutterBounds.maximumWorld.z;
       if (!overlaps) continue;
 
-      const wallCSG = CSG.FromMesh(wallMesh);
-      const cutterCSG = CSG.FromMesh(cutter);
-      const resultCSG = wallCSG.subtract(cutterCSG);
-      const material = wallMesh.material;
-      const name = wallMesh.name;
-      const resultMesh = resultCSG.toMesh(name, material, scene);
-      resultMesh.material = material;
-
-      wallMesh.dispose();
-      remainingMeshes[i] = resultMesh;
+      try {
+        const wallCSG = CSG.FromMesh(wallMesh);
+        const cutterCSG = CSG.FromMesh(cutter);
+        const resultCSG = wallCSG.subtract(cutterCSG);
+        const material = wallMesh.material;
+        const name = wallMesh.name;
+        const resultMesh = resultCSG.toMesh(name, material, scene);
+        resultMesh.material = material;
+        wallMesh.dispose();
+        remainingMeshes[i] = resultMesh;
+      } catch (e) {
+        // Continue if CSG encounters collinear edge
+      }
     }
-
     cutter.dispose();
   }
-
   return remainingMeshes;
 }
 
-/**
- * Carve rectangular doorway openings down to the floor into already-built wall meshes.
- */
 function cutDoorOpenings(doors, wallMeshes, opts, scene) {
   const { scale, wallThickness, doorHeight = 2.1 } = opts;
   const remainingMeshes = [...wallMeshes];
@@ -234,32 +347,22 @@ function cutDoorOpenings(doors, wallMeshes, opts, scene) {
         const name = wallMesh.name;
         const resultMesh = resultCSG.toMesh(name, material, scene);
         resultMesh.material = material;
-
         wallMesh.dispose();
         remainingMeshes[i] = resultMesh;
       } catch (e) {
-        console.warn("Door CSG cutout failed for mesh", wallMesh.name, e);
+        // Continue if CSG encounters collinear edge
       }
     }
-
     cutter.dispose();
   }
-
   return remainingMeshes;
 }
 
-/**
- * Fetch models from the API endpoint. The backend merges seeded models
- * (from public/models/*.glb) with user-uploaded models, so every client
- * gets the full catalog automatically after a fresh clone.
- */
 async function fetchUserModels() {
   try {
     const res = await fetch("/api/models?limit=100");
     if (!res.ok) return [];
     const data = await res.json();
-    // Keep thumbnail alongside name/url so the sidebar can render a
-    // preview icon instead of a bare text row.
     return (data.models || []).map((m) => ({
       name: m.name,
       url: m.file_path,
@@ -270,13 +373,10 @@ async function fetchUserModels() {
   }
 }
 
-/**
- * Export scene state as a JSON file.
- * Serializes floorplan (edges, windows) and placed models (name, position, rotation).
- */
 function exportSceneJSON(
   edges,
   windows,
+  doors,
   placedModels,
   wallHeightMeters,
   wallThicknessMeters,
@@ -284,12 +384,8 @@ function exportSceneJSON(
   windowHeightMeters,
   cameraDistance,
 ) {
-  // Validate input data
   if (!edges || edges.length === 0) {
     throw new Error("Cannot export: no floorplan edges found");
-  }
-  if (!placedModels || placedModels.length === 0) {
-    throw new Error("Cannot export: no models placed in scene");
   }
 
   const placedData = placedModels.map((p) => {
@@ -307,9 +403,10 @@ function exportSceneJSON(
   const sceneData = {
     version: 1,
     floorplan: {
-      edges: edges,
+      edges,
       windows: windows || [],
-      wallHeightMeters: wallHeightMeters ?? 2.8,
+      doors: doors || [],
+      wallHeightMeters: wallHeightMeters ?? 2.7,
       wallThicknessMeters: wallThicknessMeters ?? 0.15,
       sillHeightMeters: sillHeightMeters ?? 0.9,
       windowHeightMeters: windowHeightMeters ?? 1.2,
@@ -333,57 +430,13 @@ function exportSceneJSON(
   URL.revokeObjectURL(url);
 }
 
-/**
- * Import scene state from a JSON file.
- * Returns parsed scene data or throws on error.
- */
 async function importSceneJSON(file) {
-  // Validate file type
-  if (
-    file.type &&
-    !file.type.startsWith("application/json") &&
-    !file.type.includes("json")
-  ) {
-    // Also check extension as fallback
-    if (!file.name.endsWith(".json")) {
-      throw new Error("Invalid file type: expected a JSON file");
-    }
+  let text = await file.text();
+  if (!text.trim()) throw new Error("Empty file");
+  const data = JSON.parse(text);
+  if (!data.floorplan || !Array.isArray(data.floorplan.edges)) {
+    throw new Error("Invalid floorplan file format");
   }
-
-  let text;
-  try {
-    text = await file.text();
-  } catch (readErr) {
-    throw new Error("Failed to read file: " + readErr.message);
-  }
-
-  if (!text.trim()) {
-    throw new Error("Empty file");
-  }
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (parseErr) {
-    throw new Error("Invalid JSON format: " + parseErr.message);
-  }
-
-  // Validate required structure
-  if (!data.version) {
-    throw new Error("Missing version field in scene file");
-  }
-  if (data.version !== 1) {
-    throw new Error(
-      `Unsupported scene file version: ${data.version} (expected 1)`,
-    );
-  }
-  if (!data.floorplan) {
-    throw new Error("Missing floorplan data in scene file");
-  }
-  if (!Array.isArray(data.floorplan.edges)) {
-    throw new Error("Invalid floorplan: edges array is required");
-  }
-
   return data;
 }
 
@@ -395,43 +448,69 @@ function ModelPanel({
   onExportScene,
   onImportScene,
   onRemovePlacedModel,
+  onClearAllModels,
   onAutoFurnish,
   furnitureCount = 0,
+  isAutoFurnishing = false,
 }) {
   return (
     <div
       style={{
-        width: 200,
-        background: "rgba(0,0,0,0.6)",
+        width: 220,
+        background: "rgba(24, 27, 32, 0.88)",
+        backdropFilter: "blur(12px)",
         color: "#fff",
-        padding: "10px 12px",
+        padding: "12px 14px",
         overflowY: "auto",
         display: "flex",
         flexDirection: "column",
-        gap: 6,
+        gap: 8,
         fontSize: 12,
         fontFamily: "var(--font-mono, monospace)",
+        borderLeft: "1px solid rgba(255,255,255,0.1)",
       }}
     >
       {furnitureCount > 0 && onAutoFurnish && (
         <button
           onClick={onAutoFurnish}
+          disabled={isAutoFurnishing}
           style={{
-            background: "#10b981",
+            background: isAutoFurnishing ? "#6b7280" : "#10b981",
             color: "#fff",
             border: "none",
-            borderRadius: 4,
-            padding: "8px 10px",
-            fontSize: 11,
+            borderRadius: 6,
+            padding: "9px 12px",
+            fontSize: 12,
             fontWeight: 600,
+            cursor: isAutoFurnishing ? "wait" : "pointer",
+            textAlign: "center",
+            boxShadow: "0 2px 6px rgba(16, 185, 129, 0.3)",
+            transition: "all 0.15s ease",
+          }}
+        >
+          {isAutoFurnishing ? "⏳ Furnishing..." : `✨ Auto-Furnish (${furnitureCount})`}
+        </button>
+      )}
+
+      {placedModels.length > 0 && onClearAllModels && (
+        <button
+          onClick={onClearAllModels}
+          style={{
+            background: "rgba(239, 68, 68, 0.15)",
+            color: "#fca5a5",
+            border: "1px solid rgba(239, 68, 68, 0.3)",
+            borderRadius: 6,
+            padding: "5px 10px",
+            fontSize: 11,
+            fontWeight: 500,
             cursor: "pointer",
-            marginBottom: 6,
             textAlign: "center",
           }}
         >
-          ✨ Auto-Furnish ({furnitureCount})
+          🗑️ Clear Furniture ({placedModels.length})
         </button>
       )}
+
       <div
         style={{
           fontWeight: 600,
@@ -439,83 +518,81 @@ function ModelPanel({
           textTransform: "uppercase",
           letterSpacing: "0.08em",
           color: "rgba(255,255,255,0.5)",
-          marginBottom: 2,
+          marginTop: 4,
         }}
       >
-        Available
+        Models Catalog
       </div>
       {availableModels.length === 0 && (
         <div style={{ color: "rgba(255,255,255,0.4)", fontStyle: "italic" }}>
           No models yet.
         </div>
       )}
-      {availableModels.map((m, i) => (
-        <div
-          key={i}
-          onClick={() => onPlaceModel(m)}
-          style={{
-            padding: "6px 8px",
-            borderRadius: 4,
-            cursor: "pointer",
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid transparent",
-            transition: "background 0.1s",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-          }}
-        >
-          {m.thumbnail ? (
-            <img
-              src={m.thumbnail}
-              alt=""
-              width={40}
-              height={40}
-              style={{ flexShrink: 0, objectFit: "contain" }}
-              onError={(e) => {
-                e.currentTarget.style.display = "none";
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+        {availableModels.map((m, i) => (
+          <div
+            key={i}
+            onClick={() => onPlaceModel(m)}
+            style={{
+              padding: "5px 8px",
+              borderRadius: 4,
+              cursor: "pointer",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid transparent",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "background 0.1s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.12)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+            }}
+          >
+            {m.thumbnail ? (
+              <img
+                src={m.thumbnail}
+                alt=""
+                width={32}
+                height={32}
+                style={{ flexShrink: 0, objectFit: "contain" }}
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : (
+              <div style={{ width: 16, height: 16, flexShrink: 0 }} />
+            )}
+            <span
+              style={{
+                flex: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontSize: 11,
               }}
-            />
-          ) : (
-            <div style={{ width: 20, height: 20, flexShrink: 0 }} />
-          )}
-          <span
-            style={{
-              flex: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {m.name}
-          </span>
-          <span
-            style={{
-              fontSize: 9,
-              background: "rgba(255,255,255,0.15)",
-              padding: "1px 5px",
-              borderRadius: 3,
-              flexShrink: 0,
-            }}
-          >
-            +
-          </span>
-        </div>
-      ))}
+            >
+              {m.name}
+            </span>
+            <span
+              style={{
+                fontSize: 10,
+                background: "rgba(255,255,255,0.15)",
+                padding: "1px 5px",
+                borderRadius: 3,
+              }}
+            >
+              +
+            </span>
+          </div>
+        ))}
+      </div>
 
-      {/* Scene import/export — always visible, independent of whether
-          any models are currently placed. Import needs to work on an
-          empty scene (that's the point of loading a saved one); Export
-          is disabled rather than hidden when there's nothing to save. */}
       <div
         style={{
-          marginTop: 8,
+          marginTop: 6,
           fontWeight: 600,
           fontSize: 11,
           textTransform: "uppercase",
@@ -523,9 +600,9 @@ function ModelPanel({
           color: "rgba(255,255,255,0.5)",
         }}
       >
-        Scene
+        Scene State
       </div>
-      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+      <div style={{ display: "flex", gap: 6 }}>
         <button
           onClick={onExportScene}
           disabled={placedModels.length === 0}
@@ -539,13 +616,7 @@ function ModelPanel({
             cursor: placedModels.length === 0 ? "not-allowed" : "pointer",
             opacity: placedModels.length === 0 ? 0.4 : 1,
             fontSize: 10,
-            fontFamily: "var(--font-mono, monospace)",
           }}
-          title={
-            placedModels.length === 0
-              ? "Place at least one model to export"
-              : "Export scene state as JSON"
-          }
         >
           💾 Export
         </button>
@@ -559,11 +630,7 @@ function ModelPanel({
             borderRadius: 4,
             cursor: "pointer",
             fontSize: 10,
-            fontFamily: "var(--font-mono, monospace)",
             textAlign: "center",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
           }}
         >
           📂 Import
@@ -584,7 +651,7 @@ function ModelPanel({
         <>
           <div
             style={{
-              marginTop: 8,
+              marginTop: 6,
               fontWeight: 600,
               fontSize: 11,
               textTransform: "uppercase",
@@ -592,55 +659,40 @@ function ModelPanel({
               color: "rgba(255,255,255,0.5)",
             }}
           >
-            In Scene
+            In Scene ({placedModels.length})
           </div>
-          {placedModels.map((m, i) => {
-            const isDragging = draggedModel && draggedModel.mesh === m.mesh;
-            return (
-              <div
-                key={`placed-${i}`}
-                style={{
-                  padding: "6px 8px",
-                  borderRadius: 4,
-                  background: isDragging
-                    ? "rgba(255,255,255,0.15)"
-                    : "rgba(255,255,255,0.05)",
-                  border: isDragging
-                    ? "1px solid rgba(255,255,255,0.3)"
-                    : "1px solid transparent",
-                  transition: "background 0.1s",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 6,
-                  color: "rgba(255,255,255,0.7)",
-                  fontStyle: "italic",
-                }}
-              >
-                <span
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 150, overflowY: "auto" }}>
+            {placedModels.map((m, i) => {
+              const isDragging = draggedModel && draggedModel.mesh === m.mesh;
+              return (
+                <div
+                  key={`placed-${i}`}
                   style={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    padding: "4px 6px",
+                    borderRadius: 4,
+                    background: isDragging
+                      ? "rgba(255,255,255,0.2)"
+                      : "rgba(255,255,255,0.06)",
+                    border: isDragging
+                      ? "1px solid rgba(255,255,255,0.4)"
+                      : "1px solid transparent",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 11,
                   }}
                 >
-                  {m.name}
-                </span>
-                {isDragging && (
                   <span
                     style={{
-                      fontSize: 9,
-                      background: "rgba(255,255,255,0.2)",
-                      padding: "1px 5px",
-                      borderRadius: 3,
-                      flexShrink: 0,
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
                     }}
                   >
-                    Drag
+                    {m.name}
                   </span>
-                )}
-                {onRemovePlacedModel && (
                   <button
                     onPointerDown={(e) => {
                       e.preventDefault();
@@ -650,61 +702,34 @@ function ModelPanel({
                     title="Remove from scene"
                     type="button"
                     style={{
-                      background: "rgba(255,80,80,0.2)",
+                      background: "rgba(255,80,80,0.25)",
                       color: "#fff",
-                      border: "1px solid rgba(255,80,80,0.4)",
+                      border: "none",
                       borderRadius: 3,
-                      width: 18,
-                      height: 18,
-                      fontSize: 10,
-                      lineHeight: 1,
-                      padding: 0,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
+                      width: 16,
+                      height: 16,
+                      fontSize: 9,
                       cursor: "pointer",
-                      flexShrink: 0,
-                      fontStyle: "normal",
                     }}
                   >
                     ✕
                   </button>
-                )}
-              </div>
-            );
-          })}
+                </div>
+              );
+            })}
+          </div>
         </>
-      )}
-
-      {(availableModels.length > 0 || placedModels.length > 0) && (
-        <div
-          style={{
-            marginTop: "auto",
-            paddingTop: 8,
-            borderTop: "1px solid rgba(255,255,255,0.1)",
-            color: "rgba(255,255,255,0.35)",
-            fontSize: 10,
-            lineHeight: 1.5,
-          }}
-        >
-          Click + to place a model.
-          <br />
-          Drag in the scene or reposition later.
-        </div>
       )}
     </div>
   );
 }
 
-/**
- * Full 3D viewer. Takes the `edges` graph produced by the skeleton-tracing
- * step and renders it as walls you can orbit/walk around.
- */
 export default function Viewer3D({
   edges,
   windows = [],
   doors = [],
   furniture = [],
+  fixtures = [],
   pixelsPerMeter = 50,
   wallHeightMeters = 2.7,
   wallThicknessMeters = 0.15,
@@ -714,6 +739,7 @@ export default function Viewer3D({
   const canvasRef = useRef(null);
   const engineRef = useRef(null);
   const sceneRef = useRef(null);
+  const cameraRef = useRef(null);
   const wallMeshesRef = useRef([]);
   const keysRef = useRef(new Set());
   const floorMeshRef = useRef(null);
@@ -723,33 +749,24 @@ export default function Viewer3D({
   const dragOffsetRef = useRef(new Vector3());
   const dragStartPosRef = useRef(new Vector3());
   const isDraggingRef = useRef(false);
-  // Track accumulated Y rotation angle (in radians) per root mesh object
   const modelRotationRef = useRef(new Map());
-  const removePlacedModelRef = useRef(() => {});
-  // Tracks the CURRENT yaw angle (radians) per root mesh — separate from
-  // modelRotationRef, which stores the base quaternion R rotates FROM.
-  // This is the actual value written into entry.rotation for export.
   const yawAngleRef = useRef(new Map());
-  // Maps EVERY mesh in a placed model's hierarchy (root + all descendants)
-  // to { entry, root }. Registering only the root used to be the bug: a
-  // GLTF import's root is often an invisible transform node with zero
-  // vertices, so clicking the visible furniture actually hits a CHILD
-  // mesh that was never in this map — scene.pick's predicate failed for
-  // it every time, so dragging silently never started.
   const meshToModelRef = useRef(new Map());
   const floorYRef = useRef(-0.05);
-  const cameraRef = useRef(null);
+  const removePlacedModelRef = useRef(() => {});
 
-  // Store edges/windows as refs so export can access them
   const edgesRef = useRef([]);
   const windowsRef = useRef([]);
   const doorsRef = useRef([]);
   const containerRef = useRef(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [placedModels, setPlacedModels] = useState([]);
   const [draggedModel, setDraggedModel] = useState(null);
+  const [isAutoFurnishing, setIsAutoFurnishing] = useState(false);
+  const [floorStyle, setFloorStyle] = useState("wood");
+  const [wallMode, setWallMode] = useState("full"); // "full" (2.7m) | "cutaway" (1.3m)
 
   useEffect(() => {
     let cancelled = false;
@@ -762,46 +779,10 @@ export default function Viewer3D({
     };
   }, []);
 
-  // Bounds computed from edges — must be available before rebuildFromImport
-  // which references bounds.cx/cz for model positioning.
   const bounds = useMemo(
     () => computeBounds(edges, pixelsPerMeter),
     [edges, pixelsPerMeter],
   );
-
-  // FIX: cameraDistance moved up here — handleExportScene (below) depends on
-  // it in its useCallback dependency array. Previously cameraDistance was
-  // declared much further down the file (right before the big scene-setup
-  // effect), which meant handleExportScene referenced a `const` that hadn't
-  // been initialized yet in this render pass — a TDZ ReferenceError
-  // ("Cannot access 'cameraDistance' before initialization") on every render.
-  const toggleFullscreen = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    if (!document.fullscreenElement) {
-      el.requestFullscreen().catch((err) => {
-        console.warn("Fullscreen request failed:", err.message);
-      });
-    } else {
-      document.exitFullscreen();
-    }
-  }, []);
-
-  useEffect(() => {
-    const onFsChange = () => {
-      const active = document.fullscreenElement === containerRef.current;
-      setIsFullscreen(active);
-      // The canvas's actual pixel size changes when the browser goes
-      // fullscreen, but Babylon doesn't know that on its own — it only
-      // resizes on the window "resize" event, which the Fullscreen API
-      // doesn't reliably fire. Kick the engine explicitly.
-      requestAnimationFrame(() => {
-        engineRef.current?.resize();
-      });
-    };
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, []);
 
   const cameraDistance = useMemo(() => {
     if (!edges || edges.length === 0) return 10;
@@ -816,540 +797,140 @@ export default function Viewer3D({
         );
       }
     }
-    return Math.max(maxExtent * 1.8, 10);
+    return Math.max(maxExtent * 1.6, 8);
   }, [edges, pixelsPerMeter]);
 
-  // Rebuild scene from imported JSON data.
-  // FIX: this must be declared before handleImportScene (below), which
-  // depends on it — same TDZ issue as cameraDistance above.
-  const rebuildFromImport = useCallback(
-    (sceneData) => {
-      const scene = sceneRef.current;
-      const canvas = canvasRef.current;
-      if (!scene || !canvas) {
-        alert("Cannot import: viewer not ready.");
-        return;
-      }
-
-      if (sceneData.version !== 1) {
-        alert("Unsupported scene file version");
-        return;
-      }
-
-      const fp = sceneData.floorplan;
-      const wallHeight = fp.wallHeightMeters ?? wallHeightMeters;
-      const wallThickness = fp.wallThicknessMeters ?? wallThicknessMeters;
-      const sillHeight = fp.sillHeightMeters ?? sillHeightMeters;
-      const windowHeight = fp.windowHeightMeters ?? windowHeightMeters;
-      const cameraDist = fp.cameraDistance ?? 10;
-
-      // Rebuild the 3D scene with imported floorplan settings
-      const rootsToDispose = new Set();
-      for (const { root } of meshToModelRef.current.values()) {
-        rootsToDispose.add(root);
-      }
-      rootsToDispose.forEach((root) => {
-        try {
-          root.dispose(false, true);
-        } catch (e) {
-          /* already disposed */
-        }
-      });
-      modelRotationRef.current.clear();
-      yawAngleRef.current.clear();
-      selectedMeshRef.current = null;
-      draggedMeshRef.current = null;
-      isDraggingRef.current = false;
-      setDraggedModel(null);
-
-      // Rebuild the 3D scene with imported floorplan settings
-      // Clear existing wall meshes
-      wallMeshesRef.current.forEach((m) => {
-        try {
-          m.dispose();
-        } catch (e) {
-          /* already disposed */
-        }
-      });
-      wallMeshesRef.current = [];
-      meshToModelRef.current.clear();
-      // Clear existing wall meshes
-      wallMeshesRef.current.forEach((m) => {
-        try {
-          m.dispose();
-        } catch (e) {
-          /* already disposed */
-        }
-      });
-      wallMeshesRef.current = [];
-      meshToModelRef.current.clear();
-
-      // Update refs with imported data
-      // Update refs with imported data
-      edgesRef.current = fp.edges;
-      windowsRef.current = fp.windows || [];
-
-      // Bounds must come from the IMPORTED edges, not the outer `bounds`
-      // memo (which reflects whatever edges are currently loaded from
-      // props). Using stale bounds here was sizing/positioning the floor
-      // for the wrong floorplan.
-      const importedBounds = computeBounds(fp.edges, pixelsPerMeter);
-
-      // Dispose the previous floor mesh/material before building a new
-      // one. Without this, the old floor was never removed — Babylon
-      // doesn't enforce unique mesh names, so a second "floor" mesh just
-      // stacked on top of (or beside) the first, which is what made the
-      // floor look wrong after import.
-      if (floorMeshRef.current) {
-        try {
-          floorMeshRef.current.dispose();
-        } catch (e) {
-          /* already disposed */
-        }
-      }
-      if (floorMatRef.current) {
-        try {
-          floorMatRef.current.dispose();
-        } catch (e) {
-          /* already disposed */
-        }
-      }
-
-      // Rebuild walls with imported settings
-      const halfThick = wallThickness / 2;
-      const floor = MeshBuilder.CreateGround(
-        "floor",
-        {
-          width: importedBounds.w + halfThick * 2,
-          height: importedBounds.d + halfThick * 2,
-          subdivisions: 2,
-          onReady: (mesh) => {
-            mesh.receiveShadows = true;
-          },
-        },
-        scene,
-      );
-      const floorY = -0.05;
-      floor.position = new Vector3(
-        importedBounds.cx,
-        floorY,
-        importedBounds.cz,
-      );
-      floorYRef.current = floorY;
-
-      const floorMat = new StandardMaterial("floorMat", scene);
-      floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
-      floorMat.specularColor = new Color3(0.2, 0.2, 0.2);
-      floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
-      floor.material = floorMat;
-
-      floorMeshRef.current = floor;
-      floorMatRef.current = floorMat;
-
-      const wallOpts = {
-        thickness: wallThickness,
-        height: wallHeight,
-        scale: 1 / pixelsPerMeter,
-      };
-      const wallMeshes = buildWallMeshes(fp.edges, wallOpts, scene);
-
-      const wallMat = new PBRMaterial("wallMat", scene);
-      wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
-      wallMat.metallic = 0.0;
-      wallMat.roughness = 0.8;
-      wallMeshes.forEach((mesh) => {
-        mesh.material = wallMat;
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-      });
-
-      const cutWallMeshes =
-        fp.windows && fp.windows.length > 0
-          ? cutWindowOpenings(
-              fp.windows,
-              wallMeshes,
-              {
-                scale: 1 / pixelsPerMeter,
-                wallThickness,
-                sillHeight,
-                windowHeight,
-                wallHeight,
-              },
-              scene,
-            )
-          : wallMeshes;
-      cutWallMeshes.forEach((mesh) => {
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-      });
-
-      wallMeshesRef.current = cutWallMeshes;
-
-      // Update camera if distance changed
-      if (Math.abs(cameraDist - cameraRef.current?.radius) > 0.1) {
-        cameraRef.current.radius = cameraDist;
-      }
-
-      // Re-place models from saved positions/rotations (sequential chain)
-      if (sceneData.placedModels && sceneData.placedModels.length > 0) {
-        const newPlaced = [];
-
-        const loadChain = sceneData.placedModels.reduce(
-          (promiseChain, saved) => {
-            return promiseChain.then(() => {
-              return new Promise((resolve) => {
-                const apiModel =
-                  availableModels.find((m) => m.url === saved.url) ||
-                  availableModels.find((m) => m.name === saved.name);
-                if (!apiModel) {
-                  console.warn(`Model not found: ${saved.name}, skipping`);
-                  resolve();
-                  return;
-                }
-
-                // Target position from saved data (offset from bounds center)
-                const targetX = (saved.position?.[0] ?? 0) + importedBounds.cx;
-                const targetZ = (saved.position?.[2] ?? 0) + importedBounds.cz;
-                const targetY = saved.position?.[1] ?? 0;
-
-                const url = apiModel.url;
-                const name = url
-                  .split("/")
-                  .pop()
-                  .replace(/\.[^.]+$/, "");
-                const meshCountBefore = scene.meshes.length;
-
-                SceneLoader.Append(
-                  "",
-                  url,
-                  scene,
-                  (mesh) => {
-                    const newMeshes = scene.meshes.slice(meshCountBefore);
-                    if (newMeshes.length === 0) {
-                      resolve();
-                      return;
-                    }
-
-                    const root =
-                      newMeshes.find((m) => m.parent === null) || newMeshes[0];
-
-                    for (const m of newMeshes) {
-                      if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
-                        const mat = new PBRMaterial(
-                          `${name}_mat_${m.uniqueId}`,
-                          scene,
-                        );
-                        mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
-                        mat.metallic = 0.1;
-                        mat.roughness = 0.7;
-                        m.material = mat;
-                      }
-                      m.castShadow = true;
-                      m.receiveShadow = true;
-                    }
-
-                    // Set position to the saved position
-                    root.position.set(targetX, targetY, targetZ);
-
-                    // Apply saved rotation via rotationQuaternion, not Euler .rotation.
-                    // GLTF-imported roots come back from the loader with a non-null
-                    // rotationQuaternion already assigned (from coordinate system conversion).
-                    // The saved yaw was captured relative to this initial quaternion, so we
-                    // must MULTIPLY by it rather than overwrite, or the model will appear
-                    // rotated incorrectly (typically +180 degrees from what was saved).
-                    const savedYaw = saved.rotation?.[1] ?? 0;
-                    const loaderInitialQuat = root.rotationQuaternion;
-                    const savedRotationQuat = Quaternion.RotationYawPitchRoll(
-                      savedYaw,
-                      0,
-                      0,
-                    );
-                    // Multiply: loader's initial quaternion THEN the saved rotation
-                    root.rotationQuaternion =
-                      loaderInitialQuat.multiply(savedRotationQuat);
-                    modelRotationRef.current.set(root, {
-                      initialQuaternion: root.rotationQuaternion,
-                    });
-
-                    const entry = {
-                      name,
-                      position: [
-                        root.position.x - importedBounds.cx,
-                        0,
-                        root.position.z - importedBounds.cz,
-                      ],
-                      rotation: [0, savedYaw, 0],
-                      scaling: [1, 1, 1],
-                      url,
-                      mesh: root,
-                    };
-
-                    yawAngleRef.current.set(root, savedYaw);
-
-                    for (const m of newMeshes) {
-                      meshToModelRef.current.set(m, { entry, root });
-                    }
-
-                    newPlaced.push({ ...entry });
-                    resolve();
-                  },
-                  undefined,
-                  () => {
-                    resolve();
-                  },
-                );
-              });
-            });
-          },
-          Promise.resolve(), // seed with resolved promise
-        );
-
-        loadChain.then(() => {
-          setPlacedModels(newPlaced);
-          alert(
-            `Scene imported: ${newPlaced.length} models loaded successfully.`,
-          );
-        });
-      } else {
-        setPlacedModels([]);
-        alert(`Scene imported: No models to load.`);
-      }
-    },
-    [
-      availableModels,
-      bounds,
-      pixelsPerMeter,
-      wallHeightMeters,
-      wallThicknessMeters,
-      sillHeightMeters,
-      windowHeightMeters,
-    ],
-  );
-
-  // Export handler — called from ModelPanel sidebar
-  const handleExportScene = useCallback(() => {
-    // Use refs for edges/windows (stored during scene creation)
-    try {
-      exportSceneJSON(
-        edgesRef.current,
-        windowsRef.current,
-        placedModels,
-        wallHeightMeters,
-        wallThicknessMeters,
-        sillHeightMeters,
-        windowHeightMeters,
-        cameraDistance,
-      );
-    } catch (err) {
-      console.warn("Export skipped:", err.message);
+  const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
     }
-  }, [
-    placedModels,
-    wallHeightMeters,
-    wallThicknessMeters,
-    sillHeightMeters,
-    windowHeightMeters,
-    cameraDistance,
-  ]);
-
-  // Import handler — called from ModelPanel file input
-  const handleImportScene = useCallback(
-    async (file) => {
-      try {
-        const sceneData = await importSceneJSON(file);
-        rebuildFromImport(sceneData);
-      } catch (err) {
-        console.error("Import failed:", err);
-        alert(`Import failed: ${err.message}`);
-      }
-      // Reset file input so the same file can be re-selected
-    },
-    [rebuildFromImport],
-  );
-
-  const _lastRotatedAt = useRef(new Map()); // debounce R key rotations
-
-  const handleKeyDown = useCallback((e) => {
-    keysRef.current.add(e.key.toLowerCase());
-
-    // Delete / Backspace: remove the currently selected model from the
-    // scene. Selection is set on click (see onPointerDown) and persists
-    // after you release the mouse — you don't need to be actively
-    // dragging, just to have clicked a model beforehand. If the user is
-    // dragging, prefer the dragged root so Delete works immediately mid-drag.
-    if (e.key === "Delete" || e.key === "Backspace") {
-      const root = isDraggingRef.current
-        ? draggedMeshRef.current
-        : selectedMeshRef.current;
-      console.log("[Viewer3D] delete key", {
-        key: e.key,
-        isDragging: isDraggingRef.current,
-        hasDraggedMesh: !!draggedMeshRef.current,
-        hasSelectedMesh: !!selectedMeshRef.current,
-        rootName: root?.name ?? null,
-      });
-      if (!root) return;
-
-      // Don't let Backspace delete a model while the user is typing in an
-      // input/textarea elsewhere on the page (title field, etc).
-      const tag = document.activeElement?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-
-      e.preventDefault();
-
-      // meshToModelRef maps every mesh (root + descendants) to { entry, root }.
-      // The root itself is always registered, so this lookup will succeed
-      // for anything that's actually a placed, selected model.
-      const mapping = meshToModelRef.current.get(root);
-      if (mapping) {
-        console.log("[Viewer3D] deleting model", {
-          name: mapping.entry?.name,
-          url: mapping.entry?.url,
-        });
-        removePlacedModelRef.current(mapping.entry);
-      } else {
-        console.log("[Viewer3D] delete key had no model mapping", {
-          rootName: root?.name ?? null,
-        });
-      }
-      return;
-    }
-
-    // R key: rotate model 90° — only when actively dragging (left click held on model)
-    if (
-      (e.key === "r" || e.key === "R") &&
-      isDraggingRef.current &&
-      draggedMeshRef.current
-    ) {
-      const now = performance.now();
-      const last = _lastRotatedAt.current.get("r") ?? 0;
-      if (now - last < 150) return;
-      _lastRotatedAt.current.set("r", now);
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      const root = isDraggingRef.current
-        ? draggedMeshRef.current
-        : selectedMeshRef.current;
-      if (!root) return;
-
-      const delta = e.shiftKey ? -(Math.PI / 2) : Math.PI / 2;
-      const stored = modelRotationRef.current.get(root);
-      if (!stored) return;
-
-      const deltaQuat = Quaternion.RotationYawPitchRoll(delta, 0, 0);
-      root.rotationQuaternion = stored.initialQuaternion.multiply(deltaQuat);
-
-      // Update the stored quaternion so subsequent rotations build from the new orientation
-      modelRotationRef.current.set(root, {
-        initialQuaternion: root.rotationQuaternion,
-      });
-
-      // Track the running yaw angle and write it into entry.rotation so
-      // export actually captures it. Mutating index [1] in place (rather
-      // than replacing the array) means this update is visible through
-      // both the live `entry` object and its shallow-copied counterpart
-      // in the placedModels state array, since they share the same
-      // rotation array reference.
-      const prevYaw = yawAngleRef.current.get(root) ?? 0;
-      const newYaw = prevYaw + delta;
-      yawAngleRef.current.set(root, newYaw);
-
-      const mapping = meshToModelRef.current.get(root);
-      if (mapping?.entry?.rotation) {
-        mapping.entry.rotation[1] = newYaw;
-      }
-    }
-  }, []);
-  const handleKeyUp = useCallback((e) => {
-    keysRef.current.delete(e.key.toLowerCase());
   }, []);
 
   useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+    const onFsChange = () => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+      requestAnimationFrame(() => {
+        engineRef.current?.resize();
+      });
     };
-  }, [handleKeyDown, handleKeyUp]);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
 
-  const MIN_MODEL_SPACING = 0.4;
-
-  function isSpawnBlocked(sx, sz) {
-    if (edges && edges.length > 0) {
-      for (const edge of edges) {
-        for (let i = 0; i < edge.points.length - 1; i++) {
-          const [ax, ay] = edge.points[i];
-          const [bx, by] = edge.points[i + 1];
-          const scale = 1 / pixelsPerMeter;
-          const waX = ax * scale,
-            waZ = ay * scale;
-          const wbX = bx * scale,
-            wbZ = by * scale;
-          const dx = wbX - waX,
-            dz = wbZ - waZ;
-          const lenSq = dx * dx + dz * dz;
-          let t = lenSq > 0 ? ((sx - waX) * dx + (sz - waZ) * dz) / lenSq : 0;
-          t = Math.max(0, Math.min(1, t));
-          const closestX = waX + t * dx,
-            closestZ = waZ + t * dz;
-          const distX = sx - closestX,
-            distZ = sz - closestZ;
-          if (distX * distX + distZ * distZ < 0.25) return true;
-        }
+  const setViewpoint = useCallback(
+    (mode) => {
+      const cam = cameraRef.current;
+      if (!cam) return;
+      if (mode === "top") {
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.05;
+        cam.radius = cameraDistance * 1.15;
+        cam.target.set(bounds.cx, 0, bounds.cz);
+      } else if (mode === "iso") {
+        cam.alpha = -Math.PI / 4;
+        cam.beta = Math.PI / 3;
+        cam.radius = cameraDistance;
+        cam.target.set(bounds.cx, wallHeightMeters / 2, bounds.cz);
+      } else if (mode === "walk") {
+        cam.alpha = -Math.PI / 4;
+        cam.beta = Math.PI / 2 - 0.05;
+        cam.radius = 4;
+        cam.target.set(bounds.cx, 1.6, bounds.cz);
+      } else if (mode === "living") {
+        cam.alpha = -Math.PI / 3;
+        cam.beta = Math.PI / 3.2;
+        cam.radius = cameraDistance * 0.55;
+        cam.target.set(bounds.cx - bounds.w * 0.2, 1.2, bounds.cz + bounds.d * 0.15);
+      } else if (mode === "bed") {
+        cam.alpha = -Math.PI / 1.5;
+        cam.beta = Math.PI / 3.2;
+        cam.radius = cameraDistance * 0.55;
+        cam.target.set(bounds.cx + bounds.w * 0.25, 1.2, bounds.cz - bounds.d * 0.2);
       }
-    }
-    for (const m of placedModels) {
-      const dx = sx - m.position[0],
-        dz = sz - m.position[2];
-      if (dx * dx + dz * dz < (MIN_MODEL_SPACING * 2) ** 2) return true;
-    }
-    return false;
-  }
+    },
+    [bounds, cameraDistance, wallHeightMeters],
+  );
 
-  /**
-   * Load a single GLTF model into the scene at the given ground position.
-   *
-   * FIX: previously this picked "the first mesh in the scene that isn't
-   * the floor or a wall" — which breaks two ways:
-   *   1. GLTF imports usually add an invisible root transform node
-   *      (0 vertices) as part of the hierarchy. If THAT gets treated as
-   *      "the model," it's literally unclickable — there's no geometry
-   *      for scene.pick to hit, so drag can never start.
-   *   2. Once more than one model is placed, `scene.meshes` contains
-   *      every mesh in the whole scene, so "first non-floor/wall mesh"
-   *      can grab an OLD model instead of the one you just loaded.
-   *
-   * Fix: snapshot the mesh count before loading, so we know exactly
-   * which meshes THIS load call added. Find the true root (parent ===
-   * null) among those new meshes to move as one unit, but register
-   * EVERY mesh in that hierarchy in meshToModelRef — so clicking any
-   * visible child correctly resolves back to "drag the root."
-   */
-  const lastPlaceAtRef = useRef(0);
+  // Robust model importer: binds imported meshes to a dedicated TransformNode
+  const loadSingleModel = useCallback(
+    async (url, spawnPoint, rotationY = 0, name = "Furniture") => {
+      const scene = sceneRef.current;
+      if (!scene) return null;
+
+      try {
+        const result = await SceneLoader.ImportMeshAsync("", "", url, scene);
+        const { meshes, transformNodes } = result;
+        if (!meshes || meshes.length === 0) return null;
+
+        const modelId = `model_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+        const modelRoot = new TransformNode(modelId, scene);
+
+        const topNodes = [
+          ...transformNodes.filter((t) => !t.parent),
+          ...meshes.filter((m) => !m.parent),
+        ];
+        topNodes.forEach((node) => {
+          node.parent = modelRoot;
+        });
+
+        // Compute local bounding box to align model bottom with ground
+        let minLocalY = Infinity;
+        for (const m of meshes) {
+          if (m.getTotalVertices && m.getTotalVertices() > 0) {
+            const b = m.getBoundingInfo().boundingBox;
+            if (b.minimum.y < minLocalY) minLocalY = b.minimum.y;
+            m.castShadow = true;
+            m.receiveShadow = true;
+            if (m.material instanceof PBRMaterial) {
+              m.material.environmentIntensity = 0.8;
+            }
+          }
+        }
+
+        const yOffset = isFinite(minLocalY) ? -minLocalY : 0;
+        modelRoot.position.set(spawnPoint.x, spawnPoint.y + yOffset, spawnPoint.z);
+        if (rotationY) {
+          modelRoot.rotation.y = rotationY;
+        }
+
+        const entry = {
+          name,
+          position: [spawnPoint.x - bounds.cx, yOffset, spawnPoint.z - bounds.cz],
+          rotation: [0, rotationY, 0],
+          scaling: [1, 1, 1],
+          url,
+          mesh: modelRoot,
+        };
+
+        yawAngleRef.current.set(modelRoot, rotationY);
+        modelRotationRef.current.set(modelRoot, {
+          initialQuaternion: Quaternion.RotationYawPitchRoll(rotationY, 0, 0),
+        });
+
+        for (const m of meshes) {
+          meshToModelRef.current.set(m, { entry, root: modelRoot });
+        }
+
+        return entry;
+      } catch (err) {
+        console.warn("Failed to load model:", url, err);
+        return null;
+      }
+    },
+    [bounds],
+  );
+
   const placeModelInScene = useCallback(
-    (apiModel) => {
-      const now = performance.now();
-      if (now - lastPlaceAtRef.current < 250) return; // swallow duplicate fires
-      lastPlaceAtRef.current = now;
-
+    async (apiModel) => {
       const cam = cameraRef.current;
       const scene = sceneRef.current;
       const canvas = canvasRef.current;
       if (!scene || !cam || !canvas) return;
 
-      // Cast a ray from the camera through the CENTER of the canvas and
-      // intersect it with the ground plane — this is what "where the
-      // camera is looking" actually means. The previous version used
-      // `cam.target`, which is just the ArcRotateCamera's orbit pivot
-      // point — it only happens to match the true screen-center ground
-      // intersection in specific cases (e.g. looking straight down), and
-      // drifts as soon as the camera's pitch/angle differs, or once WASD
-      // has moved the target around. Reusing rayGroundIntersect here
-      // means placement and dragging now share the exact same, correct
-      // ray math.
       const centerHit = rayGroundIntersect(
         scene,
         cam,
@@ -1358,97 +939,46 @@ export default function Viewer3D({
         canvas.clientWidth / 2,
         canvas.clientHeight / 2,
       );
-      if (!centerHit) {
-        console.warn(
-          "Placement failed: camera isn't looking at the ground (ray never hit the floor plane). Try tilting the camera down.",
-        );
-        return;
-      }
-
-      let spawnPoint = centerHit;
-
-      // If the exact center-of-view point is blocked (on a wall, or
-      // stacked on an existing model), nudge outward along the camera's
-      // right vector in a few small steps rather than failing outright —
-      // repeated clicks with the camera in the same position would
-      // otherwise always target the identical point and always collide.
-      if (isSpawnBlocked(spawnPoint.x, spawnPoint.z)) {
-        const right = cam.getDirection(Vector3.Right());
-        right.y = 0;
-        right.normalize();
-        let found = false;
-        for (let step = 1; step <= 5; step++) {
-          const candidate = centerHit.add(right.scale(step * 0.6));
-          if (!isSpawnBlocked(candidate.x, candidate.z)) {
-            spawnPoint = candidate;
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          console.warn(
-            "Placement blocked: no clear spot near the camera's view center. Try orbiting to a more open part of the room.",
-          );
-          return;
-        }
-      }
+      if (!centerHit) return;
 
       const url = apiModel.url;
-      const name = url
-        .split("/")
-        .pop()
-        .replace(/\.[^.]+$/, "");
-      const meshCountBefore = scene.meshes.length;
-
-      SceneLoader.Append(
-        "",
-        url,
-        scene,
-        () => {
-          const newMeshes = scene.meshes.slice(meshCountBefore);
-          if (newMeshes.length === 0) return;
-
-          const root = newMeshes.find((m) => m.parent === null) || newMeshes[0];
-
-          for (const m of newMeshes) {
-            if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
-              const mat = new PBRMaterial(`${name}_mat_${m.uniqueId}`, scene);
-              mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
-              mat.metallic = 0.1;
-              mat.roughness = 0.7;
-              m.material = mat;
-            }
-            m.castShadow = true;
-            m.receiveShadow = true;
-          }
-
-          root.position = spawnPoint;
-
-          const entry = {
-            name,
-            position: [spawnPoint.x - bounds.cx, 0, spawnPoint.z - bounds.cz],
-            rotation: [0, 0, 0],
-            scaling: [1, 1, 1],
-            url,
-            mesh: root,
-          };
-
-          for (const m of newMeshes) {
-            meshToModelRef.current.set(m, { entry, root });
-          }
-
-          yawAngleRef.current.set(root, 0);
-
-          setPlacedModels((prev) => [...prev, entry]);
-        },
-        undefined,
-        () => {
-          // GLTF loader warnings can fire alongside success — ignore them.
-        },
-      );
+      const name = apiModel.name || url.split("/").pop().replace(/\.[^.]+$/, "");
+      const entry = await loadSingleModel(url, centerHit, 0, name);
+      if (entry) {
+        setPlacedModels((prev) => [...prev, entry]);
+      }
     },
-    [bounds, placedModels],
+    [loadSingleModel],
   );
+
+  const handleAutoFurnish = useCallback(async () => {
+    if (!furniture || furniture.length === 0 || !sceneRef.current || isAutoFurnishing) return;
+    setIsAutoFurnishing(true);
+    const scale = 1 / pixelsPerMeter;
+
+    const added = [];
+    for (const f of furniture) {
+      if (!f.model_file) continue;
+      const url = `/models/${f.model_file}`;
+      const name = (f.label || "Furniture").replace(/_/g, " ");
+      const canvasPt = f.canvas_center || f.center;
+      if (!canvasPt) continue;
+      const worldX = canvasPt[0] * scale;
+      const worldZ = canvasPt[1] * scale;
+      const spawnPoint = new Vector3(worldX, 0, worldZ);
+      const angle = f.angle_rad || 0;
+
+      const entry = await loadSingleModel(url, spawnPoint, angle, name);
+      if (entry) {
+        added.push(entry);
+      }
+    }
+
+    if (added.length > 0) {
+      setPlacedModels((prev) => [...prev, ...added]);
+    }
+    setIsAutoFurnishing(false);
+  }, [furniture, pixelsPerMeter, loadSingleModel, isAutoFurnishing]);
 
   const removePlacedModel = useCallback((entryToRemove) => {
     const root =
@@ -1473,80 +1003,136 @@ export default function Viewer3D({
       isDraggingRef.current = false;
       setDraggedModel(null);
       cameraRef.current?.attachControl(canvasRef.current, true);
-      if (canvasRef.current) canvasRef.current.style.cursor = "crosshair";
     }
 
     try {
       root.dispose(false, true);
-    } catch (e) {
-      // already disposed
-    }
+    } catch (e) {}
 
     setPlacedModels((prev) => prev.filter((p) => p.mesh !== root));
   }, []);
 
-  const handleAutoFurnish = useCallback(() => {
-    if (!furniture || furniture.length === 0 || !sceneRef.current) return;
-    const scene = sceneRef.current;
-    const scale = 1 / pixelsPerMeter;
-
-    furniture.forEach((f) => {
-      if (!f.model_file) return;
-      const url = `/models/${f.model_file}`;
-      const name = f.label || "Furniture";
-      const canvasPt = f.canvas_center || f.center;
-      const worldX = canvasPt[0] * scale;
-      const worldZ = canvasPt[1] * scale;
-      const spawnPoint = new Vector3(worldX, 0, worldZ);
-      const meshCountBefore = scene.meshes.length;
-
-      SceneLoader.Append("", url, scene, () => {
-        const newMeshes = scene.meshes.slice(meshCountBefore);
-        if (newMeshes.length === 0) return;
-        const root = newMeshes.find((m) => m.parent === null) || newMeshes[0];
-
-        for (const m of newMeshes) {
-          if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
-            const mat = new PBRMaterial(`${name}_mat_${m.uniqueId}`, scene);
-            mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
-            mat.metallic = 0.1;
-            mat.roughness = 0.7;
-            m.material = mat;
-          }
-          m.castShadow = true;
-          m.receiveShadow = true;
-        }
-
-        root.position = spawnPoint;
-        if (f.angle_rad) {
-          root.rotation.y = f.angle_rad;
-          yawAngleRef.current.set(root, f.angle_rad);
-        } else {
-          yawAngleRef.current.set(root, 0);
-        }
-
-        const entry = {
-          name,
-          position: [spawnPoint.x - bounds.cx, 0, spawnPoint.z - bounds.cz],
-          rotation: [0, f.angle_rad || 0, 0],
-          scaling: [1, 1, 1],
-          url,
-          mesh: root,
-        };
-
-        for (const m of newMeshes) {
-          meshToModelRef.current.set(m, { entry, root });
-        }
-
-        setPlacedModels((prev) => [...prev, entry]);
-      });
+  const clearAllModels = useCallback(() => {
+    const roots = new Set();
+    for (const { root } of meshToModelRef.current.values()) {
+      roots.add(root);
+    }
+    roots.forEach((root) => {
+      try {
+        root.dispose(false, true);
+      } catch (e) {}
     });
-  }, [furniture, pixelsPerMeter, bounds]);
+    meshToModelRef.current.clear();
+    modelRotationRef.current.clear();
+    yawAngleRef.current.clear();
+    selectedMeshRef.current = null;
+    draggedMeshRef.current = null;
+    isDraggingRef.current = false;
+    setDraggedModel(null);
+    setPlacedModels([]);
+  }, []);
+
+  const handleExportScene = useCallback(() => {
+    exportSceneJSON(
+      edgesRef.current,
+      windowsRef.current,
+      doorsRef.current,
+      placedModels,
+      wallHeightMeters,
+      wallThicknessMeters,
+      sillHeightMeters,
+      windowHeightMeters,
+      cameraDistance,
+    );
+  }, [
+    placedModels,
+    wallHeightMeters,
+    wallThicknessMeters,
+    sillHeightMeters,
+    windowHeightMeters,
+    cameraDistance,
+  ]);
+
+  const handleImportScene = useCallback(
+    async (file) => {
+      try {
+        const sceneData = await importSceneJSON(file);
+        if (sceneData.placedModels && sceneData.placedModels.length > 0) {
+          clearAllModels();
+          for (const m of sceneData.placedModels) {
+            const worldX = (m.position?.[0] ?? 0) + bounds.cx;
+            const worldZ = (m.position?.[2] ?? 0) + bounds.cz;
+            const angle = m.rotation?.[1] ?? 0;
+            const entry = await loadSingleModel(m.url, new Vector3(worldX, 0, worldZ), angle, m.name);
+            if (entry) {
+              setPlacedModels((prev) => [...prev, entry]);
+            }
+          }
+        }
+      } catch (err) {
+        alert(`Import failed: ${err.message}`);
+      }
+    },
+    [bounds, clearAllModels, loadSingleModel],
+  );
+
+  const handleKeyDown = useCallback((e) => {
+    keysRef.current.add(e.key.toLowerCase());
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+      const root = isDraggingRef.current
+        ? draggedMeshRef.current
+        : selectedMeshRef.current;
+      if (!root) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+
+      const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
+      if (mapping) {
+        removePlacedModelRef.current(mapping.entry);
+      }
+      return;
+    }
+
+    if (e.key === "r" || e.key === "R") {
+      const root = isDraggingRef.current
+        ? draggedMeshRef.current
+        : selectedMeshRef.current;
+      if (!root) return;
+
+      e.preventDefault();
+      const delta = e.shiftKey ? -Math.PI / 4 : Math.PI / 4;
+      const prevYaw = yawAngleRef.current.get(root) ?? (root.rotation.y || 0);
+      const newYaw = prevYaw + delta;
+      root.rotation.y = newYaw;
+      yawAngleRef.current.set(root, newYaw);
+
+      const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
+      if (mapping?.entry?.rotation) {
+        mapping.entry.rotation[1] = newYaw;
+      }
+    }
+  }, []);
+
+  const handleKeyUp = useCallback((e) => {
+    keysRef.current.delete(e.key.toLowerCase());
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [handleKeyDown, handleKeyUp]);
 
   useEffect(() => {
     removePlacedModelRef.current = removePlacedModel;
   }, [removePlacedModel]);
 
+  // Main 3D Babylon.js Scene Initialization
   useEffect(() => {
     if (!canvasRef.current || !edges || edges.length === 0) return;
 
@@ -1564,61 +1150,68 @@ export default function Viewer3D({
 
     const scene = new Scene(engine);
     sceneRef.current = scene;
-    scene.clearColor = new Color4(0.53, 0.81, 0.92, 1);
+    scene.clearColor = new Color4(0.94, 0.96, 0.98, 1);
+
+    const effectiveWallHeight = wallMode === "cutaway" ? 1.3 : wallHeightMeters;
 
     const camera = new ArcRotateCamera(
       "camera",
       -Math.PI / 4,
       Math.PI / 3,
       cameraDistance,
-      new Vector3(bounds.cx, wallHeightMeters / 2, bounds.cz),
+      new Vector3(bounds.cx, effectiveWallHeight / 2, bounds.cz),
       scene,
     );
     cameraRef.current = camera;
     camera.attachControl(canvasRef.current, true);
-    camera.keysUp = [];
-    camera.keysDown = [];
-    camera.keysLeft = [];
-    camera.keysRight = [];
     camera.lowerRadiusLimit = 2;
-    camera.upperRadiusLimit = 200;
-    camera.lowerBetaLimit = 0.1;
+    camera.upperRadiusLimit = 150;
+    camera.lowerBetaLimit = 0.05;
     camera.upperBetaLimit = Math.PI / 2;
-    camera.alphaRotationSpeed = 12;
-    camera.betaRotationSpeed = 12;
+    camera.alphaRotationSpeed = 10;
+    camera.betaRotationSpeed = 10;
 
     const wasdSpeed = 8;
 
+    // 1. Natural Sky Hemisphere Light
     const hemiLight = new HemisphericLight(
       "hemiLight",
       new Vector3(0, 1, 0),
       scene,
     );
-    hemiLight.intensity = 0.6;
-    hemiLight.diffuse = new Color3(1, 1, 1);
-    hemiLight.groundColor = new Color3(0.3, 0.3, 0.3);
+    hemiLight.intensity = 0.72;
+    hemiLight.diffuse = new Color3(1.0, 0.98, 0.95);
+    hemiLight.groundColor = new Color3(0.40, 0.38, 0.35);
 
-    const dirLight = new DirectionalLight(
-      "dirLight",
-      new Vector3(
-        cameraDistance,
-        cameraDistance * 1.5,
-        cameraDistance,
-      ).normalize(),
+    // 2. Warm Sun Directional Light with soft shadows
+    const sunDir = new Vector3(-0.6, -1.2, -0.7).normalize();
+    const dirLight = new DirectionalLight("dirLight", sunDir, scene);
+    dirLight.position = new Vector3(bounds.cx + 12, 18, bounds.cz + 12);
+    dirLight.intensity = 1.25;
+    dirLight.diffuse = new Color3(1.0, 0.97, 0.90);
+
+    const shadowGen = new ShadowGenerator(2048, dirLight);
+    shadowGen.useBlurExponentialShadowMap = true;
+    shadowGen.blurKernel = 28;
+    shadowGen.darkness = 0.45;
+    shadowGen.bias = 0.002;
+
+    // 3. Interior Fill Light
+    const fillLight = new DirectionalLight(
+      "fillLight",
+      new Vector3(0.6, -0.8, 0.7).normalize(),
       scene,
     );
-    dirLight.intensity = 1;
+    fillLight.intensity = 0.35;
+    fillLight.diffuse = new Color3(0.88, 0.92, 1.0);
 
-    const shadowGen = new ShadowGenerator(1024, dirLight);
-    shadowGen.useBlurExponentialShadowMap = true;
-    shadowGen.blurKernel = 16;
-
+    // 4. Floor with Procedural Material
     const halfThick = wallThicknessMeters / 2;
     const floor = MeshBuilder.CreateGround(
       "floor",
       {
-        width: bounds.w + halfThick * 2,
-        height: bounds.d + halfThick * 2,
+        width: bounds.w + halfThick * 4,
+        height: bounds.d + halfThick * 4,
         subdivisions: 2,
         onReady: (mesh) => {
           mesh.receiveShadows = true;
@@ -1630,40 +1223,33 @@ export default function Viewer3D({
     floor.position = new Vector3(bounds.cx, floorY, bounds.cz);
     floorYRef.current = floorY;
 
-    const floorMat = new StandardMaterial("floorMat", scene);
-    floorMat.diffuseColor = new Color3(0.9, 0.9, 0.9);
-    floorMat.specularColor = new Color3(0.2, 0.2, 0.2);
-    floorMat.emissiveColor = new Color3(0.3, 0.3, 0.3);
+    const floorMat = createFloorMaterial(floorStyle, scene);
     floor.material = floorMat;
-
     floorMeshRef.current = floor;
     floorMatRef.current = floorMat;
 
+    // 5. Build Wall Geometry
     wallMeshesRef.current = [];
     const wallOpts = {
       thickness: wallThicknessMeters,
-      height: wallHeightMeters,
+      height: effectiveWallHeight,
       scale: 1 / pixelsPerMeter,
     };
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
 
     const wallMat = new PBRMaterial("wallMat", scene);
-    wallMat.diffuseColor = new Color3(0.91, 0.89, 0.84);
+    wallMat.albedoColor = new Color3(0.94, 0.93, 0.90);
     wallMat.metallic = 0.0;
-    wallMat.roughness = 0.8;
+    wallMat.roughness = 0.88;
     wallMeshes.forEach((mesh) => {
       mesh.material = wallMat;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
     });
 
-    // Carve window openings into the solid wall meshes we just built. This
-    // runs after material assignment so CSG.toMesh can carry the material
-    // straight through; shadow flags don't survive the rebuild, so they're
-    // reapplied below on whatever mesh array comes back (a mix of untouched
-    // originals and CSG results).
+    // 6. CSG Window and Door Cutouts
     const cutWithWindows =
-      windows && windows.length > 0
+      windows && windows.length > 0 && wallMode !== "cutaway"
         ? cutWindowOpenings(
             windows,
             wallMeshes,
@@ -1672,7 +1258,7 @@ export default function Viewer3D({
               wallThickness: wallThicknessMeters,
               sillHeight: sillHeightMeters,
               windowHeight: windowHeightMeters,
-              wallHeight: wallHeightMeters,
+              wallHeight: effectiveWallHeight,
             },
             scene,
           )
@@ -1686,7 +1272,7 @@ export default function Viewer3D({
             {
               scale: 1 / pixelsPerMeter,
               wallThickness: wallThicknessMeters,
-              doorHeight: 2.1,
+              doorHeight: Math.min(2.1, effectiveWallHeight),
             },
             scene,
           )
@@ -1696,16 +1282,16 @@ export default function Viewer3D({
       mesh.castShadow = true;
       mesh.receiveShadow = true;
     });
-
     wallMeshesRef.current = cutWallMeshes;
 
-    // Store edges/windows/doors in refs so export can access them
+    // 7. Procedural Bathroom Fixtures
+    createBathroomFixtures(fixtures, { scale: 1 / pixelsPerMeter }, scene);
+
     edgesRef.current = edges;
     windowsRef.current = windows;
     doorsRef.current = doors;
 
-    const ourMeshes = [...cutWallMeshes];
-
+    // 8. Interaction & Picking Handlers
     const _forward = Vector3.Zero();
     const _right = Vector3.Zero();
     const _targetDelta = Vector3.Zero();
@@ -1722,9 +1308,6 @@ export default function Viewer3D({
     const onContextMenu = (e) => e.preventDefault();
     canvasRef.current.addEventListener("contextmenu", onContextMenu);
 
-    // (rayGroundIntersect is now a module-level helper, shared with
-    // placeModelInScene — see top of file)
-
     const onPointerDown = (e) => {
       if (e.button !== 0) return;
       const rect = canvasRef.current.getBoundingClientRect();
@@ -1735,28 +1318,14 @@ export default function Viewer3D({
         meshToModelRef.current.has(mesh),
       );
       if (!hit.hit) {
-        // Clicked empty space — deselect
         selectedMeshRef.current = null;
         return;
       }
-      const picked = hit.pickedMesh;
-      if (!picked) return;
-      const mapping = meshToModelRef.current.get(picked);
+      const mapping = meshToModelRef.current.get(hit.pickedMesh);
       if (!mapping) return;
 
-      // Select this mesh for rotation (R key works on selected mesh)
-      selectedMeshRef.current = mapping.root;
-
-      // Drag the ROOT, not whatever child mesh was actually clicked —
-      // moving the root cascades the whole hierarchy, and it's also
-      // guaranteed to be the same object as what we stored in
-      // placedModels' `mesh` field for the sidebar's isDragging check.
       const root = mapping.root;
-
-      // detachControl actually disables camera input; the previous
-      // `camera.pointerInputEnabled = false` was not a real Babylon.js
-      // property, so it silently did nothing — the camera kept orbiting
-      // underneath the drag.
+      selectedMeshRef.current = root;
       camera.detachControl();
 
       const hitPoint = rayGroundIntersect(
@@ -1774,19 +1343,9 @@ export default function Viewer3D({
 
       isDraggingRef.current = true;
       draggedMeshRef.current = root;
-      selectedMeshRef.current = root;
       dragOffsetRef.current.copyFrom(hitPoint);
       dragStartPosRef.current.copyFrom(root.position);
       setDraggedModel(mapping.entry);
-      console.log("[Viewer3D] drag start", {
-        name: mapping.entry?.name,
-        rootName: root.name,
-      });
-
-      // Always store the current quaternion as the base for next rotation
-      modelRotationRef.current.set(root, {
-        initialQuaternion: root.rotationQuaternion ?? Quaternion.Identity(),
-      });
 
       canvasRef.current.style.cursor = "grabbing";
     };
@@ -1810,20 +1369,15 @@ export default function Viewer3D({
       );
       if (!hitPoint) return;
 
-      const floorY = floorYRef.current;
       const deltaX = hitPoint.x - dragOffsetRef.current.x;
       const deltaZ = hitPoint.z - dragOffsetRef.current.z;
 
-      mesh.position.set(
-        dragStartPosRef.current.x + deltaX,
-        floorY,
-        dragStartPosRef.current.z + deltaZ,
-      );
+      mesh.position.x = dragStartPosRef.current.x + deltaX;
+      mesh.position.z = dragStartPosRef.current.z + deltaZ;
 
-      const mapping = meshToModelRef.current.get(mesh);
+      const mapping = [...meshToModelRef.current.values()].find((m) => m.root === mesh);
       if (mapping) {
         mapping.entry.position[0] = mesh.position.x - bounds.cx;
-        mapping.entry.position[1] = 0;
         mapping.entry.position[2] = mesh.position.z - bounds.cz;
       }
     };
@@ -1831,39 +1385,16 @@ export default function Viewer3D({
     const onPointerUp = () => {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
-
       const mesh = draggedMeshRef.current;
-
-      const cam = cameraRef.current;
-      if (cam) {
-        cam.attachControl(canvasRef.current, true);
-      }
-
-      if (mesh) {
-        const mapping = meshToModelRef.current.get(mesh);
-        if (mapping) {
-          mapping.entry.position[0] = mesh.position.x - bounds.cx;
-          mapping.entry.position[1] = 0;
-          mapping.entry.position[2] = mesh.position.z - bounds.cz;
-        }
-        setDraggedModel(null);
-      }
-
-      // Clear refs AFTER using them above
-      console.log("[Viewer3D] drag end", {
-        rootName: mesh?.name ?? null,
-      });
+      cameraRef.current?.attachControl(canvasRef.current, true);
       draggedMeshRef.current = null;
-      canvasRef.current.style.cursor = "crosshair";
+      setDraggedModel(null);
+      if (canvasRef.current) canvasRef.current.style.cursor = "crosshair";
     };
 
     canvasRef.current.addEventListener("pointerdown", onPointerDown);
-    canvasRef.current.ownerDocument.addEventListener(
-      "pointermove",
-      onPointerMove,
-    );
+    canvasRef.current.ownerDocument.addEventListener("pointermove", onPointerMove);
     canvasRef.current.ownerDocument.addEventListener("pointerup", onPointerUp);
-    // keydown/keyup handled by window listeners (handleKeyDown/handleKeyUp)
 
     engine.runRenderLoop(() => {
       const keys = keysRef.current;
@@ -1893,24 +1424,15 @@ export default function Viewer3D({
       canvasRef.current?.removeEventListener("contextmenu", onContextMenu);
       canvasRef.current?.ownerDocument?.removeEventListener("wheel", onWheel);
       canvasRef.current?.removeEventListener("pointerdown", onPointerDown);
-      canvasRef.current?.ownerDocument?.removeEventListener(
-        "pointermove",
-        onPointerMove,
-      );
-      canvasRef.current?.ownerDocument?.removeEventListener(
-        "pointerup",
-        onPointerUp,
-      );
-      // keydown/keyup cleanup handled by window listener effect above
-      if (document.pointerLockElement === canvasRef.current) {
-        document.exitPointerLock();
-      }
-      ourMeshes.forEach((m) => m.dispose());
+      canvasRef.current?.ownerDocument?.removeEventListener("pointermove", onPointerMove);
+      canvasRef.current?.ownerDocument?.removeEventListener("pointerup", onPointerUp);
+      wallMeshesRef.current.forEach((m) => m.dispose());
       floor.dispose();
       wallMat.dispose();
       floorMat.dispose();
       dirLight.dispose();
       hemiLight.dispose();
+      fillLight.dispose();
       shadowGen.dispose();
       camera.dispose();
       scene.dispose();
@@ -1920,6 +1442,7 @@ export default function Viewer3D({
     edges,
     windows,
     doors,
+    fixtures,
     pixelsPerMeter,
     cameraDistance,
     bounds,
@@ -1927,13 +1450,13 @@ export default function Viewer3D({
     wallThicknessMeters,
     sillHeightMeters,
     windowHeightMeters,
+    floorStyle,
+    wallMode,
   ]);
 
   useEffect(() => {
     const handleResize = () => {
-      if (engineRef.current) {
-        engineRef.current.resize();
-      }
+      engineRef.current?.resize();
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
@@ -1944,80 +1467,184 @@ export default function Viewer3D({
       ref={containerRef}
       style={{
         width: "100%",
-        height: isFullscreen ? "100vh" : 500,
+        height: isFullscreen ? "100vh" : 540,
         display: "flex",
-        background: "#87ceeb",
+        background: "#0f172a",
         cursor: draggedModel ? "grabbing" : "crosshair",
         position: "relative",
+        borderRadius: 8,
+        overflow: "hidden",
+        border: "1px solid var(--line, #334155)",
       }}
     >
-      <div
-        style={{
-          flex: 1,
-          position: "relative",
-          minHeight: 0,
-        }}
-      >
+      <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          style={{
-            width: "100%",
-            height: "100%",
-            border: "none",
-            outline: "none",
-          }}
+          style={{ width: "100%", height: "100%", border: "none", outline: "none" }}
         />
-        {(!edges || edges.length === 0) && (
-          <div
+
+        {/* Viewpoints & Material Preset Bar */}
+        <div
+          style={{
+            position: "absolute",
+            top: 10,
+            left: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            background: "rgba(15, 23, 42, 0.75)",
+            backdropFilter: "blur(8px)",
+            padding: "5px 8px",
+            borderRadius: 6,
+            border: "1px solid rgba(255,255,255,0.15)",
+            fontSize: 11,
+            color: "#fff",
+            zIndex: 10,
+          }}
+        >
+          <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)", marginRight: 2 }}>View:</span>
+          <button
+            onClick={() => setViewpoint("iso")}
             style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
+              background: "rgba(255,255,255,0.12)",
               color: "#fff",
-              fontSize: 14,
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
             }}
           >
-            Loading 3D scene...
-          </div>
-        )}
+            🏠 3D Iso
+          </button>
+          <button
+            onClick={() => setViewpoint("top")}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
+            }}
+          >
+            📐 Top Plan
+          </button>
+          <button
+            onClick={() => setViewpoint("walk")}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
+            }}
+          >
+            🚶 Walkthrough
+          </button>
+          <button
+            onClick={() => setViewpoint("living")}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
+            }}
+          >
+            🛋️ Living
+          </button>
+          <button
+            onClick={() => setViewpoint("bed")}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
+            }}
+          >
+            🛏️ Bed
+          </button>
+
+          <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.2)", margin: "0 2px" }} />
+
+          <button
+            onClick={() => setWallMode(wallMode === "full" ? "cutaway" : "full")}
+            style={{
+              background: wallMode === "cutaway" ? "#0284c7" : "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 8px",
+              cursor: "pointer",
+              fontWeight: 500,
+            }}
+          >
+            ✂️ {wallMode === "cutaway" ? "Cutaway Walls" : "Full Walls"}
+          </button>
+
+          <select
+            value={floorStyle}
+            onChange={(e) => setFloorStyle(e.target.value)}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 4,
+              padding: "3px 6px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            <option value="wood" style={{ color: "#000" }}>🪵 Oak Parquet</option>
+            <option value="tile" style={{ color: "#000" }}>🏛️ Modern Tile</option>
+            <option value="loft" style={{ color: "#000" }}>⚪ Studio Grey</option>
+          </select>
+        </div>
+
         <button
           onClick={toggleFullscreen}
           title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           style={{
             position: "absolute",
-            top: 8,
-            right: 8,
-            background: "rgba(0,0,0,0.5)",
+            top: 10,
+            right: 10,
+            background: "rgba(15, 23, 42, 0.75)",
             color: "#fff",
-            border: "1px solid rgba(255,255,255,0.3)",
-            borderRadius: 4,
-            padding: "6px 10px",
-            fontSize: 12,
+            border: "1px solid rgba(255,255,255,0.2)",
+            borderRadius: 6,
+            padding: "5px 10px",
+            fontSize: 11,
             cursor: "pointer",
-            fontFamily: "sans-serif",
+            zIndex: 10,
           }}
         >
-          {isFullscreen ? "⤓ Exit" : "⤢ Fullscreen"}
+          {isFullscreen ? "⤓ Exit Fullscreen" : "⤢ Fullscreen"}
         </button>
+
         <div
           style={{
             position: "absolute",
-            bottom: 8,
-            left: 8,
-            background: "rgba(0,0,0,0.5)",
-            color: "#fff",
-            padding: "4px 8px",
-            borderRadius: 4,
-            fontSize: 12,
-            fontFamily: "sans-serif",
+            bottom: 10,
+            left: 10,
+            background: "rgba(15, 23, 42, 0.75)",
+            backdropFilter: "blur(6px)",
+            color: "rgba(255,255,255,0.9)",
+            padding: "5px 10px",
+            borderRadius: 6,
+            fontSize: 11,
+            border: "1px solid rgba(255,255,255,0.15)",
           }}
         >
-          WASD to move · Click model to select · R to rotate · Del to remove ·
-          Drag to reposition · Scroll to zoom
+          WASD to move · Left-click model to drag · <strong>R</strong> to rotate · <strong>Del</strong> to remove · Scroll to zoom
         </div>
       </div>
+
       <ModelPanel
         availableModels={availableModels}
         placedModels={placedModels}
@@ -2026,8 +1653,10 @@ export default function Viewer3D({
         onExportScene={handleExportScene}
         onImportScene={handleImportScene}
         onRemovePlacedModel={removePlacedModel}
+        onClearAllModels={clearAllModels}
         onAutoFurnish={handleAutoFurnish}
         furnitureCount={furniture ? furniture.filter((f) => f.model_file).length : 0}
+        isAutoFurnishing={isAutoFurnishing}
       />
     </div>
   );

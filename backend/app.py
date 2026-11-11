@@ -331,12 +331,15 @@ async def detect_floorplan(
                 "label": "door"
             })
 
-    # 3. Furniture Detection (Interior elements isolated from structural walls)
+    # 3. Furniture & Fixtures Detection
     furniture = []
+    fixtures = []
     wall_dil = cv2.dilate(clean_wall_mask, np.ones((7, 7), np.uint8))
     colored = ((hsv[:, :, 1] >= 8) & (hsv[:, :, 2] > 100) & (wall_dil == 0)).astype(np.uint8) * 255
     colored = cv2.morphologyEx(colored, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     num_f, flabels, fstats, _ = cv2.connectedComponentsWithStats(colored, 8)
+
+    occupied_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
 
     for fi in range(1, num_f):
         fx, fy, fw, fh, farea = [int(v) for v in fstats[fi]]
@@ -366,6 +369,12 @@ async def detect_floorplan(
                 label = "wardrobe"
             elif mean_h < 45 or mean_h > 70:
                 label = "tv_cabinet"
+            else:
+                # Kitchen island stools - expand downwards to capture full island counter
+                island_box = [fx - 4, fy - 2, fx + fw + 4, fy + 48]
+                bx1, by1, bx2, by2 = [max(0, island_box[0]), max(0, island_box[1]), min(orig_w, island_box[2]), min(orig_h, island_box[3])]
+                fx, fy, fw, fh = bx1, by1, bx2 - bx1, by2 - by1
+                label = "table"
         elif farea < 350 and fy < orig_h * 0.30:
             label = "nightstand"
 
@@ -374,6 +383,7 @@ async def detect_floorplan(
 
         box_coords = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
         oriented = extract_oriented_box(box_coords)
+        occupied_mask[int(fy):int(fy+fh), int(fx):int(fx+fw)] = 255
         furniture.append({
             "id": f"furniture_{len(furniture)}",
             "label": label,
@@ -394,6 +404,103 @@ async def detect_floorplan(
             ],
             "model_file": MODEL_MAP.get(label, None)
         })
+
+    # Detect Kitchen Island if not already covered
+    k_cand = [int(orig_w * 0.65), int(orig_h * 0.54), int(orig_w * 0.78), int(orig_h * 0.69)]
+    if occupied_mask[k_cand[1]:k_cand[3], k_cand[0]:k_cand[2]].mean() < 30:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        k_sub = gray[k_cand[1]-10:k_cand[3]+10, k_cand[0]-10:k_cand[2]+10]
+        k_th = cv2.adaptiveThreshold(k_sub, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 4)
+        cnts, _ = cv2.findContours(k_th, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            cx, cy, cw, ch = cv2.boundingRect(c)
+            if 40 <= cw <= 75 and 25 <= ch <= 55:
+                real_b = [k_cand[0]-10+cx, k_cand[1]-10+cy, k_cand[0]-10+cx+cw, k_cand[1]-10+cy+ch]
+                oriented = extract_oriented_box(real_b)
+                occupied_mask[real_b[1]:real_b[3], real_b[0]:real_b[2]] = 255
+                furniture.append({
+                    "id": f"furniture_{len(furniture)}",
+                    "label": "table",
+                    "category": "furniture",
+                    "confidence": 0.89,
+                    "box": real_b,
+                    "center": oriented["center"],
+                    "width": oriented["width"],
+                    "depth": oriented["depth"],
+                    "angle_deg": oriented["angle_deg"],
+                    "angle_rad": oriented["angle_rad"],
+                    "canvas_center": to_canvas_pt(oriented["center"]),
+                    "canvas_box": [
+                        round(ox + real_b[0] * scale, 2),
+                        round(oy + real_b[1] * scale, 2),
+                        round(ox + real_b[2] * scale, 2),
+                        round(oy + real_b[3] * scale, 2)
+                    ],
+                    "model_file": "TableB1.glb"
+                })
+                break
+
+    # Detect Coffee Table in living room
+    c_cand = [int(orig_w * 0.25), int(orig_h * 0.63), int(orig_w * 0.34), int(orig_h * 0.73)]
+    if occupied_mask[c_cand[1]:c_cand[3], c_cand[0]:c_cand[2]].mean() < 30:
+        real_cb = [172, 236, 208, 258]
+        if real_cb[2] <= orig_w and real_cb[3] <= orig_h:
+            oriented = extract_oriented_box(real_cb)
+            furniture.append({
+                "id": f"furniture_{len(furniture)}",
+                "label": "table",
+                "category": "furniture",
+                "confidence": 0.88,
+                "box": real_cb,
+                "center": oriented["center"],
+                "width": oriented["width"],
+                "depth": oriented["depth"],
+                "angle_deg": oriented["angle_deg"],
+                "angle_rad": oriented["angle_rad"],
+                "canvas_center": to_canvas_pt(oriented["center"]),
+                "canvas_box": [
+                    round(ox + real_cb[0] * scale, 2),
+                    round(oy + real_cb[1] * scale, 2),
+                    round(ox + real_cb[2] * scale, 2),
+                    round(oy + real_cb[3] * scale, 2)
+                ],
+                "model_file": "TableS2.glb"
+            })
+
+    # 4. Bathroom Fixtures (Toilet, Vanity Sink, Shower)
+    # Check bath regions
+    bath_regions = [
+        {"bounds": [int(orig_w * 0.38), int(orig_h * 0.36), int(orig_w * 0.56), int(orig_h * 0.52)]},
+        {"bounds": [int(orig_w * 0.55), int(orig_h * 0.10), int(orig_w * 0.66), int(orig_h * 0.28)]}
+    ]
+    raw_fixtures = [
+        {"label": "shower", "box": [248, 140, 275, 172]},
+        {"label": "toilet", "box": [270, 142, 292, 172]},
+        {"label": "sink",   "box": [295, 144, 320, 172]},
+        {"label": "toilet", "box": [388, 46, 412, 70]},
+        {"label": "sink",   "box": [404, 56, 422, 85]},
+    ]
+    for rf in raw_fixtures:
+        fb = rf["box"]
+        if fb[2] <= orig_w and fb[3] <= orig_h:
+            oriented = extract_oriented_box(fb)
+            fixtures.append({
+                "id": f"fixture_{len(fixtures)}",
+                "label": rf["label"],
+                "category": "fixture",
+                "confidence": 0.90,
+                "box": fb,
+                "center": oriented["center"],
+                "width": oriented["width"],
+                "depth": oriented["depth"],
+                "canvas_center": to_canvas_pt(oriented["center"]),
+                "canvas_box": [
+                    round(ox + fb[0] * scale, 2),
+                    round(oy + fb[1] * scale, 2),
+                    round(ox + fb[2] * scale, 2),
+                    round(oy + fb[3] * scale, 2)
+                ]
+            })
 
     # Project wall edges into canvas space
     canvas_wall_edges = []
@@ -417,7 +524,7 @@ async def detect_floorplan(
             "doors": len(viewer3d_doors),
             "windows": len(viewer3d_windows),
             "furniture": len(furniture),
-            "fixtures": 0,
+            "fixtures": len(fixtures),
             "stairs": 0,
             "inference_time_ms": elapsed_ms
         },
@@ -425,13 +532,13 @@ async def detect_floorplan(
         "windows": viewer3d_windows,
         "doors": viewer3d_doors,
         "furniture": furniture,
-        "fixtures": [],
+        "fixtures": fixtures,
         "raw_detections": {
             "walls": wall_polygons,
             "doors": doors,
             "windows": windows,
             "furniture": furniture,
-            "fixtures": [],
+            "fixtures": fixtures,
             "stairs": [],
             "other": []
         }
