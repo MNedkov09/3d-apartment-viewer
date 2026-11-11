@@ -8,7 +8,6 @@ import {
   Color3,
   Color4,
   PBRMaterial,
-  StandardMaterial,
   DynamicTexture,
   MeshBuilder,
   ArcRotateCamera,
@@ -155,7 +154,7 @@ export function createFloorMaterial(style = "wood", scene) {
     ctx.beginPath();
     ctx.moveTo(0, 150); ctx.bezierCurveTo(160, 200, 320, 120, 512, 240);
     ctx.stroke();
-    // Subtle grout lines
+    // Grout tile grid
     ctx.strokeStyle = "rgba(200, 205, 215, 0.4)";
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, 255, 255);
@@ -352,12 +351,14 @@ function createBathroomFixtures(fixtures, opts, scene) {
       tray.material = ceramicMat;
       tray.receiveShadow = true;
 
+      // Realistic modern low-profile shower glass screen (height: 1.25m, width: 0.75m)
       const glass = MeshBuilder.CreateBox(
         `shower_glass_${i}`,
-        { width: 0.80, depth: 0.03, height: 1.85 },
+        { width: 0.75, depth: 0.02, height: 1.25 },
         scene,
       );
-      glass.position.set(cx, 0.95, cz + 0.38);
+      // Bottom of glass rests neatly on the tray: y = 0.06 + 1.25/2 = 0.685m
+      glass.position.set(cx, 0.685, cz + 0.35);
       glass.material = glassMat;
       glass.castShadow = true;
       fixtureMeshes.push(tray, glass);
@@ -609,9 +610,9 @@ function RightSidePanel({
   return (
     <div
       style={{
-        width: 290,
-        background: "rgba(20, 24, 33, 0.94)",
-        backdropFilter: "blur(14px)",
+        width: 310,
+        background: "rgba(18, 22, 31, 0.96)",
+        backdropFilter: "blur(16px)",
         color: "#fff",
         display: "flex",
         flexDirection: "column",
@@ -621,6 +622,7 @@ function RightSidePanel({
         zIndex: 10,
         height: "100%",
         userSelect: "none",
+        overflow: "hidden",
       }}
     >
       {/* Top Panel Tabs */}
@@ -628,15 +630,16 @@ function RightSidePanel({
         style={{
           display: "flex",
           borderBottom: "1px solid rgba(255,255,255,0.1)",
-          background: "rgba(15, 18, 25, 0.6)",
+          background: "rgba(12, 15, 22, 0.75)",
+          flexShrink: 0,
         }}
       >
         <button
           onClick={() => setActiveTab("furniture")}
           style={{
             flex: 1,
-            padding: "10px 4px",
-            background: activeTab === "furniture" ? "rgba(255,255,255,0.1)" : "transparent",
+            padding: "11px 4px",
+            background: activeTab === "furniture" ? "rgba(255,255,255,0.12)" : "transparent",
             color: activeTab === "furniture" ? "#fff" : "rgba(255,255,255,0.6)",
             border: "none",
             borderBottom: activeTab === "furniture" ? "2px solid #38bdf8" : "2px solid transparent",
@@ -656,8 +659,8 @@ function RightSidePanel({
           onClick={() => setActiveTab("materials")}
           style={{
             flex: 1,
-            padding: "10px 4px",
-            background: activeTab === "materials" ? "rgba(255,255,255,0.1)" : "transparent",
+            padding: "11px 4px",
+            background: activeTab === "materials" ? "rgba(255,255,255,0.12)" : "transparent",
             color: activeTab === "materials" ? "#fff" : "rgba(255,255,255,0.6)",
             border: "none",
             borderBottom: activeTab === "materials" ? "2px solid #38bdf8" : "2px solid transparent",
@@ -677,8 +680,8 @@ function RightSidePanel({
           onClick={() => setActiveTab("scene")}
           style={{
             flex: 1,
-            padding: "10px 4px",
-            background: activeTab === "scene" ? "rgba(255,255,255,0.1)" : "transparent",
+            padding: "11px 4px",
+            background: activeTab === "scene" ? "rgba(255,255,255,0.12)" : "transparent",
             color: activeTab === "scene" ? "#fff" : "rgba(255,255,255,0.6)",
             border: "none",
             borderBottom: activeTab === "scene" ? "2px solid #38bdf8" : "2px solid transparent",
@@ -696,16 +699,17 @@ function RightSidePanel({
         </button>
       </div>
 
-      {/* Tab 1: Furniture Catalog & Placed Items */}
+      {/* Tab 1: Furniture Catalog & Placed Items (Flex-expanded to fill entire height!) */}
       {activeTab === "furniture" && (
         <div
           style={{
             flex: 1,
             padding: "12px",
-            overflowY: "auto",
             display: "flex",
             flexDirection: "column",
-            gap: 10,
+            gap: 12,
+            minHeight: 0,
+            overflow: "hidden",
           }}
         >
           {furnitureCount > 0 && onAutoFurnish && (
@@ -717,7 +721,7 @@ function RightSidePanel({
                 color: "#fff",
                 border: "none",
                 borderRadius: 6,
-                padding: "9px 12px",
+                padding: "10px 14px",
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: isAutoFurnishing ? "wait" : "pointer",
@@ -727,6 +731,7 @@ function RightSidePanel({
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 6,
+                flexShrink: 0,
               }}
             >
               {isAutoFurnishing ? "⏳ Positioning Models..." : `✨ Auto-Furnish (${furnitureCount})`}
@@ -746,108 +751,142 @@ function RightSidePanel({
                 fontWeight: 500,
                 cursor: "pointer",
                 textAlign: "center",
+                flexShrink: 0,
               }}
             >
               🗑️ Clear Furniture ({placedModels.length})
             </button>
           )}
 
-          <div
-            style={{
-              fontWeight: 600,
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "rgba(255,255,255,0.5)",
-              marginTop: 4,
-            }}
-          >
-            Models Catalog
-          </div>
-
+          {/* Models Catalog: Generous flex container with larger preview cards */}
           <div
             style={{
               display: "flex",
               flexDirection: "column",
-              gap: 4,
-              maxHeight: 210,
-              overflowY: "auto",
-              paddingRight: 2,
+              flex: placedModels.length > 0 ? "1.2" : "1",
+              minHeight: 0,
             }}
           >
-            {availableModels.map((m, i) => (
-              <div
-                key={i}
-                onClick={() => onPlaceModel(m)}
-                style={{
-                  padding: "5px 8px",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  transition: "background 0.15s ease",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(255,255,255,0.14)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                }}
-              >
-                {m.thumbnail ? (
-                  <img
-                    src={m.thumbnail}
-                    alt=""
-                    width={32}
-                    height={32}
-                    style={{ flexShrink: 0, objectFit: "contain", borderRadius: 4 }}
-                    onError={(e) => {
-                      e.currentTarget.style.display = "none";
+            <div
+              style={{
+                fontWeight: 600,
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "rgba(255,255,255,0.5)",
+                marginBottom: 6,
+                flexShrink: 0,
+              }}
+            >
+              Models Catalog ({availableModels.length})
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                paddingRight: 4,
+              }}
+            >
+              {availableModels.map((m, i) => (
+                <div
+                  key={i}
+                  onClick={() => onPlaceModel(m)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    transition: "all 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.14)";
+                    e.currentTarget.style.borderColor = "rgba(56, 189, 248, 0.4)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                    e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
+                  }}
+                >
+                  {m.thumbnail ? (
+                    <img
+                      src={m.thumbnail}
+                      alt=""
+                      width={44}
+                      height={44}
+                      style={{
+                        flexShrink: 0,
+                        objectFit: "contain",
+                        borderRadius: 5,
+                        background: "rgba(0,0,0,0.3)",
+                        padding: 2,
+                      }}
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div style={{ width: 44, height: 44, flexShrink: 0, background: "rgba(255,255,255,0.1)", borderRadius: 5 }} />
+                  )}
+                  <span
+                    style={{
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      fontSize: 12,
+                      fontWeight: 600,
                     }}
-                  />
-                ) : (
-                  <div style={{ width: 28, height: 28, flexShrink: 0, background: "rgba(255,255,255,0.1)", borderRadius: 4 }} />
-                )}
-                <span
-                  style={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    fontSize: 11,
-                  }}
-                >
-                  {m.name}
-                </span>
-                <span
-                  style={{
-                    fontSize: 10,
-                    color: "#38bdf8",
-                    padding: "2px 6px",
-                    background: "rgba(56, 189, 248, 0.15)",
-                    borderRadius: 4,
-                    fontWeight: 600,
-                  }}
-                >
-                  + Add
-                </span>
-              </div>
-            ))}
+                  >
+                    {m.name}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "#38bdf8",
+                      padding: "4px 8px",
+                      background: "rgba(56, 189, 248, 0.18)",
+                      borderRadius: 4,
+                      fontWeight: 600,
+                      flexShrink: 0,
+                    }}
+                  >
+                    + Add
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
 
+          {/* In Scene Section: Flex container filling the bottom area with zero empty void */}
           {placedModels.length > 0 && (
-            <>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                flex: "1",
+                minHeight: 0,
+                borderTop: "1px solid rgba(255,255,255,0.1)",
+                paddingTop: 8,
+              }}
+            >
               <div
                 style={{
-                  marginTop: 8,
                   fontWeight: 600,
                   fontSize: 11,
                   textTransform: "uppercase",
                   letterSpacing: "0.08em",
                   color: "rgba(255,255,255,0.5)",
+                  marginBottom: 6,
+                  flexShrink: 0,
                 }}
               >
                 In Scene ({placedModels.length})
@@ -856,10 +895,11 @@ function RightSidePanel({
                 style={{
                   display: "flex",
                   flexDirection: "column",
-                  gap: 3,
-                  maxHeight: 160,
+                  gap: 5,
+                  flex: 1,
+                  minHeight: 0,
                   overflowY: "auto",
-                  paddingRight: 2,
+                  paddingRight: 4,
                 }}
               >
                 {placedModels.map((m, i) => {
@@ -868,19 +908,19 @@ function RightSidePanel({
                     <div
                       key={`placed-${i}`}
                       style={{
-                        padding: "5px 8px",
-                        borderRadius: 4,
+                        padding: "7px 10px",
+                        borderRadius: 6,
                         background: isDragging
                           ? "rgba(56, 189, 248, 0.25)"
                           : "rgba(255,255,255,0.06)",
                         border: isDragging
                           ? "1px solid rgba(56, 189, 248, 0.5)"
-                          : "1px solid transparent",
+                          : "1px solid rgba(255,255,255,0.06)",
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
-                        gap: 6,
-                        fontSize: 11,
+                        gap: 8,
+                        fontSize: 12,
                       }}
                     >
                       <span
@@ -889,6 +929,7 @@ function RightSidePanel({
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
+                          fontWeight: 500,
                         }}
                       >
                         {m.name}
@@ -905,14 +946,15 @@ function RightSidePanel({
                           background: "rgba(239, 68, 68, 0.25)",
                           color: "#fca5a5",
                           border: "none",
-                          borderRadius: 3,
-                          width: 18,
-                          height: 18,
-                          fontSize: 10,
+                          borderRadius: 4,
+                          width: 22,
+                          height: 22,
+                          fontSize: 11,
                           cursor: "pointer",
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "center",
+                          transition: "background 0.15s ease",
                         }}
                       >
                         ✕
@@ -921,12 +963,12 @@ function RightSidePanel({
                   );
                 })}
               </div>
-            </>
+            </div>
           )}
         </div>
       )}
 
-      {/* Tab 2: Materials Palette (Drag & Drop + Click to Apply) */}
+      {/* Tab 2: Materials Palette */}
       {activeTab === "materials" && (
         <div
           style={{
@@ -935,11 +977,12 @@ function RightSidePanel({
             overflowY: "auto",
             display: "flex",
             flexDirection: "column",
-            gap: 12,
+            gap: 14,
+            minHeight: 0,
           }}
         >
           <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", lineHeight: 1.4 }}>
-            💡 <strong>Drag & Drop</strong> any material onto the 3D floor or walls, or click <strong>Apply</strong>.
+            💡 <strong>Drag & Drop</strong> any swatch onto the 3D floor or walls, or click <strong>Apply</strong>.
           </div>
 
           {/* Flooring Materials */}
@@ -973,7 +1016,7 @@ function RightSidePanel({
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
-                      padding: "6px 8px",
+                      padding: "7px 10px",
                       borderRadius: 6,
                       background: isSelected ? "rgba(56, 189, 248, 0.15)" : "rgba(255,255,255,0.06)",
                       border: isSelected ? "1px solid #38bdf8" : "1px solid rgba(255,255,255,0.08)",
@@ -983,8 +1026,8 @@ function RightSidePanel({
                   >
                     <div
                       style={{
-                        width: 24,
-                        height: 24,
+                        width: 26,
+                        height: 26,
                         borderRadius: 4,
                         background: mat.color,
                         boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.3)",
@@ -1004,7 +1047,7 @@ function RightSidePanel({
                         color: "#fff",
                         border: "none",
                         borderRadius: 4,
-                        padding: "3px 7px",
+                        padding: "4px 8px",
                         fontSize: 10,
                         cursor: "pointer",
                       }}
@@ -1048,7 +1091,7 @@ function RightSidePanel({
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
-                      padding: "6px 8px",
+                      padding: "7px 10px",
                       borderRadius: 6,
                       background: isSelected ? "rgba(167, 139, 250, 0.15)" : "rgba(255,255,255,0.06)",
                       border: isSelected ? "1px solid #a78bfa" : "1px solid rgba(255,255,255,0.08)",
@@ -1058,8 +1101,8 @@ function RightSidePanel({
                   >
                     <div
                       style={{
-                        width: 24,
-                        height: 24,
+                        width: 26,
+                        height: 26,
                         borderRadius: 4,
                         background: fin.color,
                         boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.3)",
@@ -1079,7 +1122,7 @@ function RightSidePanel({
                         color: "#fff",
                         border: "none",
                         borderRadius: 4,
-                        padding: "3px 7px",
+                        padding: "4px 8px",
                         fontSize: 10,
                         cursor: "pointer",
                       }}
@@ -1094,7 +1137,7 @@ function RightSidePanel({
         </div>
       )}
 
-      {/* Tab 3: Scene State & Import/Export */}
+      {/* Tab 3: Scene State & Metrics */}
       {activeTab === "scene" && (
         <div
           style={{
@@ -1104,6 +1147,7 @@ function RightSidePanel({
             display: "flex",
             flexDirection: "column",
             gap: 12,
+            minHeight: 0,
           }}
         >
           <div
@@ -1195,6 +1239,10 @@ function RightSidePanel({
               <span style={{ fontWeight: 600 }}>~16.2m × 11.2m</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "rgba(255,255,255,0.6)" }}>Wall Height:</span>
+              <span style={{ fontWeight: 600 }}>2.70 meters</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "rgba(255,255,255,0.6)" }}>Placed Furniture:</span>
               <span style={{ fontWeight: 600 }}>{placedModels.length} models</span>
             </div>
@@ -1258,8 +1306,7 @@ export default function Viewer3D({
   const [isAutoFurnishing, setIsAutoFurnishing] = useState(false);
   const [floorStyle, setFloorStyle] = useState("wood");
   const [wallStyle, setWallStyle] = useState("white");
-  const [wallMode, setWallMode] = useState("cutaway"); // "cutaway" (1.35m) | "full" (2.7m)
-  const [viewpoint, setViewpointState] = useState("cutaway");
+  const [viewpoint, setViewpointState] = useState("iso");
   const [toastMessage, setToastMessage] = useState(null);
 
   const toastTimeoutRef = useRef(null);
@@ -1289,7 +1336,7 @@ export default function Viewer3D({
 
   const cameraDistance = useMemo(() => {
     const diag = Math.hypot(bounds.w, bounds.d);
-    return Math.max(diag * 1.05, 8);
+    return Math.max(diag * 1.1, 8);
   }, [bounds]);
 
   const toggleFullscreen = useCallback(async () => {
@@ -1328,44 +1375,44 @@ export default function Viewer3D({
         cam.target.set(bounds.cx, 0, bounds.cz);
       } else if (mode === "iso") {
         cam.alpha = -Math.PI / 4;
-        cam.beta = Math.PI / 3;
-        cam.radius = cameraDistance;
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 1.1;
         cam.target.set(bounds.cx, wallHeightMeters / 2, bounds.cz);
       } else if (mode === "walk") {
         cam.alpha = -Math.PI / 4;
         cam.beta = Math.PI / 2.05;
         cam.radius = 0.5;
-        cam.target.set(bounds.cx, 1.35, bounds.cz);
+        cam.target.set(bounds.cx, 1.45, bounds.cz);
       } else if (mode === "living") {
         cam.alpha = -Math.PI / 3;
-        cam.beta = Math.PI / 3.4;
+        cam.beta = Math.PI / 3.2;
         cam.radius = cameraDistance * 0.45;
-        cam.target.set(bounds.cx - bounds.w * 0.28, 1.1, bounds.cz + bounds.d * 0.18);
+        cam.target.set(bounds.cx - bounds.w * 0.28, 1.2, bounds.cz + bounds.d * 0.18);
       } else if (mode === "kitchen") {
         cam.alpha = -Math.PI / 1.3;
-        cam.beta = Math.PI / 3.4;
+        cam.beta = Math.PI / 3.2;
         cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx + bounds.w * 0.24, 1.1, bounds.cz + bounds.d * 0.18);
+        cam.target.set(bounds.cx + bounds.w * 0.24, 1.2, bounds.cz + bounds.d * 0.18);
       } else if (mode === "master_bed") {
         cam.alpha = -Math.PI / 1.5;
-        cam.beta = Math.PI / 3.4;
+        cam.beta = Math.PI / 3.2;
         cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx + bounds.w * 0.26, 1.1, bounds.cz - bounds.d * 0.25);
+        cam.target.set(bounds.cx + bounds.w * 0.26, 1.2, bounds.cz - bounds.d * 0.25);
       } else if (mode === "bed_2") {
         cam.alpha = -Math.PI / 3;
-        cam.beta = Math.PI / 3.4;
+        cam.beta = Math.PI / 3.2;
         cam.radius = cameraDistance * 0.42;
-        cam.target.set(bounds.cx - bounds.w * 0.05, 1.1, bounds.cz - bounds.d * 0.25);
+        cam.target.set(bounds.cx - bounds.w * 0.05, 1.2, bounds.cz - bounds.d * 0.25);
       } else if (mode === "bath") {
         cam.alpha = -Math.PI / 2.4;
-        cam.beta = Math.PI / 3.2;
+        cam.beta = Math.PI / 3.0;
         cam.radius = cameraDistance * 0.32;
-        cam.target.set(bounds.cx - bounds.w * 0.06, 1.0, bounds.cz - bounds.d * 0.02);
+        cam.target.set(bounds.cx - bounds.w * 0.06, 1.2, bounds.cz - bounds.d * 0.02);
       } else if (mode === "entry") {
         cam.alpha = -Math.PI / 2;
-        cam.beta = Math.PI / 3.4;
+        cam.beta = Math.PI / 3.2;
         cam.radius = cameraDistance * 0.38;
-        cam.target.set(bounds.cx - bounds.w * 0.02, 1.1, bounds.cz + bounds.d * 0.38);
+        cam.target.set(bounds.cx - bounds.w * 0.02, 1.2, bounds.cz + bounds.d * 0.38);
       }
     },
     [bounds, cameraDistance, wallHeightMeters],
@@ -1642,7 +1689,7 @@ export default function Viewer3D({
     };
   }, [removePlacedModel]);
 
-  // Main 3D Babylon.js Scene Initialization
+  // Main 3D Babylon.js Scene Initialization (Always full walls at 2.7m ceiling height)
   useEffect(() => {
     if (!canvasRef.current) return;
 
@@ -1662,14 +1709,12 @@ export default function Viewer3D({
     sceneRef.current = scene;
     scene.clearColor = new Color4(0.08, 0.11, 0.18, 1);
 
-    const effectiveWallHeight = wallMode === "cutaway" ? 1.35 : wallHeightMeters;
-
     const camera = new ArcRotateCamera(
       "camera",
       -Math.PI / 4,
-      Math.PI / 3,
-      cameraDistance,
-      new Vector3(bounds.cx, effectiveWallHeight / 2, bounds.cz),
+      Math.PI / 3.4,
+      cameraDistance * 1.1,
+      new Vector3(bounds.cx, wallHeightMeters / 2, bounds.cz),
       scene,
     );
     cameraRef.current = camera;
@@ -1737,11 +1782,11 @@ export default function Viewer3D({
     floor.material = floorMat;
     floorMeshRef.current = floor;
 
-    // 5. Build Wall Geometry
+    // 5. Build Wall Geometry (Full 2.7m walls with gap-free overlapping corners)
     wallMeshesRef.current = [];
     const wallOpts = {
       thickness: wallThicknessMeters,
-      height: effectiveWallHeight,
+      height: wallHeightMeters,
       scale: 1 / pixelsPerMeter,
     };
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
@@ -1755,7 +1800,7 @@ export default function Viewer3D({
 
     // 6. CSG Window and Door Cutouts
     const cutWithWindows =
-      windows && windows.length > 0 && wallMode !== "cutaway"
+      windows && windows.length > 0
         ? cutWindowOpenings(
             windows,
             wallMeshes,
@@ -1764,7 +1809,7 @@ export default function Viewer3D({
               wallThickness: wallThicknessMeters,
               sillHeight: sillHeightMeters,
               windowHeight: windowHeightMeters,
-              wallHeight: effectiveWallHeight,
+              wallHeight: wallHeightMeters,
             },
             scene,
           )
@@ -1778,7 +1823,7 @@ export default function Viewer3D({
             {
               scale: 1 / pixelsPerMeter,
               wallThickness: wallThicknessMeters,
-              doorHeight: Math.min(2.1, effectiveWallHeight),
+              doorHeight: Math.min(2.1, wallHeightMeters),
             },
             scene,
           )
@@ -1955,8 +2000,6 @@ export default function Viewer3D({
     wallThicknessMeters,
     sillHeightMeters,
     windowHeightMeters,
-    wallMode,
-    // Note: floorStyle and wallStyle are dynamically swapped via applyFloorMaterial/applyWallMaterial
   ]);
 
   // Drag and drop onto 3D Canvas
@@ -2022,7 +2065,7 @@ export default function Viewer3D({
       ref={containerRef}
       style={{
         width: "100%",
-        height: isFullscreen ? "100vh" : 560,
+        height: isFullscreen ? "100vh" : 580,
         display: "flex",
         background: "#080b12",
         cursor: draggedModel ? "grabbing" : "crosshair",
@@ -2041,7 +2084,7 @@ export default function Viewer3D({
           style={{ width: "100%", height: "100%", border: "none", outline: "none", display: "block" }}
         />
 
-        {/* Top Header Bar: Unified Flex Container (Zero Button Overlap!) */}
+        {/* Top Header Bar: Unified Flex Container (Zero Overlap!) */}
         <div
           style={{
             position: "absolute",
@@ -2056,7 +2099,7 @@ export default function Viewer3D({
             zIndex: 20,
           }}
         >
-          {/* Left Pill: Camera Modes, Room Focus Presets, Cutaway Toggle */}
+          {/* Left Pill: Camera Modes & Room Focus Presets */}
           <div
             style={{
               display: "flex",
@@ -2108,29 +2151,9 @@ export default function Viewer3D({
             <button onClick={() => setViewpoint("entry")} style={btnStyle(viewpoint === "entry")}>
               🚪 Entry
             </button>
-
-            <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.2)", margin: "0 4px" }} />
-
-            <button
-              onClick={() => setWallMode(wallMode === "full" ? "cutaway" : "full")}
-              title="Toggle between Cutaway architectural dollhouse view and full height walls"
-              style={{
-                background: wallMode === "cutaway" ? "#0284c7" : "rgba(255,255,255,0.12)",
-                color: "#fff",
-                border: "none",
-                borderRadius: 4,
-                padding: "4px 8px",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 600,
-                boxShadow: wallMode === "cutaway" ? "0 2px 8px rgba(2, 132, 199, 0.4)" : "none",
-              }}
-            >
-              ✂️ {wallMode === "cutaway" ? "Cutaway Walls (1.35m)" : "Full Walls (2.7m)"}
-            </button>
           </div>
 
-          {/* Right Pill: Fullscreen Button (Completely isolated, no overlap!) */}
+          {/* Right Pill: Fullscreen Button (Isolated with zero overlap) */}
           <div style={{ pointerEvents: "auto", flexShrink: 0 }}>
             <button
               onClick={toggleFullscreen}
