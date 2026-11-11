@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "ai": "cd backend && .\\.venv\\Scripts\\python.exe -m uvicorn app:app --port 8000",
     "build": "next build",
     "postbuild": "node scripts/generate-models-manifest.js",
     "start": "next start",

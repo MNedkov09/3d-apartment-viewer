@@ -174,6 +174,81 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
 }
 
 /**
+ * Carve rectangular doorway openings down to the floor into already-built wall meshes.
+ */
+function cutDoorOpenings(doors, wallMeshes, opts, scene) {
+  const { scale, wallThickness, doorHeight = 2.1 } = opts;
+  const remainingMeshes = [...wallMeshes];
+
+  for (const door of doors) {
+    if (!door.start || !door.end) continue;
+    const startX = door.start[0] * scale;
+    const startZ = door.start[1] * scale;
+    const endX = door.end[0] * scale;
+    const endZ = door.end[1] * scale;
+    const dX = endX - startX;
+    const dZ = endZ - startZ;
+    const openingLength = Math.hypot(dX, dZ);
+    if (openingLength < 0.05) continue;
+
+    const centerX = (startX + endX) / 2;
+    const centerZ = (startZ + endZ) / 2;
+    const centerY = doorHeight / 2;
+    const angle = Math.atan2(dZ, dX);
+
+    const cutter = MeshBuilder.CreateBox(
+      "doorCutter",
+      {
+        width: openingLength + 0.06,
+        height: doorHeight,
+        depth: wallThickness * 2.5,
+      },
+      scene,
+    );
+    cutter.position.set(centerX, centerY, centerZ);
+    cutter.rotation.y = angle;
+    cutter.computeWorldMatrix(true);
+
+    const cutterBounds = cutter.getBoundingInfo().boundingBox;
+
+    for (let i = 0; i < remainingMeshes.length; i++) {
+      const wallMesh = remainingMeshes[i];
+      if (!wallMesh || wallMesh.isDisposed()) continue;
+
+      wallMesh.computeWorldMatrix(true);
+      const wallBounds = wallMesh.getBoundingInfo().boundingBox;
+      const overlaps =
+        wallBounds.maximumWorld.x >= cutterBounds.minimumWorld.x &&
+        wallBounds.minimumWorld.x <= cutterBounds.maximumWorld.x &&
+        wallBounds.maximumWorld.y >= cutterBounds.minimumWorld.y &&
+        wallBounds.minimumWorld.y <= cutterBounds.maximumWorld.y &&
+        wallBounds.maximumWorld.z >= cutterBounds.minimumWorld.z &&
+        wallBounds.minimumWorld.z <= cutterBounds.maximumWorld.z;
+      if (!overlaps) continue;
+
+      try {
+        const wallCSG = CSG.FromMesh(wallMesh);
+        const cutterCSG = CSG.FromMesh(cutter);
+        const resultCSG = wallCSG.subtract(cutterCSG);
+        const material = wallMesh.material;
+        const name = wallMesh.name;
+        const resultMesh = resultCSG.toMesh(name, material, scene);
+        resultMesh.material = material;
+
+        wallMesh.dispose();
+        remainingMeshes[i] = resultMesh;
+      } catch (e) {
+        console.warn("Door CSG cutout failed for mesh", wallMesh.name, e);
+      }
+    }
+
+    cutter.dispose();
+  }
+
+  return remainingMeshes;
+}
+
+/**
  * Fetch models from the API endpoint. The backend merges seeded models
  * (from public/models/*.glb) with user-uploaded models, so every client
  * gets the full catalog automatically after a fresh clone.
@@ -320,6 +395,8 @@ function ModelPanel({
   onExportScene,
   onImportScene,
   onRemovePlacedModel,
+  onAutoFurnish,
+  furnitureCount = 0,
 }) {
   return (
     <div
@@ -336,6 +413,25 @@ function ModelPanel({
         fontFamily: "var(--font-mono, monospace)",
       }}
     >
+      {furnitureCount > 0 && onAutoFurnish && (
+        <button
+          onClick={onAutoFurnish}
+          style={{
+            background: "#10b981",
+            color: "#fff",
+            border: "none",
+            borderRadius: 4,
+            padding: "8px 10px",
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            marginBottom: 6,
+            textAlign: "center",
+          }}
+        >
+          ✨ Auto-Furnish ({furnitureCount})
+        </button>
+      )}
       <div
         style={{
           fontWeight: 600,
@@ -607,6 +703,8 @@ function ModelPanel({
 export default function Viewer3D({
   edges,
   windows = [],
+  doors = [],
+  furniture = [],
   pixelsPerMeter = 50,
   wallHeightMeters = 2.7,
   wallThicknessMeters = 0.15,
@@ -645,6 +743,7 @@ export default function Viewer3D({
   // Store edges/windows as refs so export can access them
   const edgesRef = useRef([]);
   const windowsRef = useRef([]);
+  const doorsRef = useRef([]);
   const containerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -1386,6 +1485,64 @@ export default function Viewer3D({
     setPlacedModels((prev) => prev.filter((p) => p.mesh !== root));
   }, []);
 
+  const handleAutoFurnish = useCallback(() => {
+    if (!furniture || furniture.length === 0 || !sceneRef.current) return;
+    const scene = sceneRef.current;
+    const scale = 1 / pixelsPerMeter;
+
+    furniture.forEach((f) => {
+      if (!f.model_file) return;
+      const url = `/models/${f.model_file}`;
+      const name = f.label || "Furniture";
+      const canvasPt = f.canvas_center || f.center;
+      const worldX = canvasPt[0] * scale;
+      const worldZ = canvasPt[1] * scale;
+      const spawnPoint = new Vector3(worldX, 0, worldZ);
+      const meshCountBefore = scene.meshes.length;
+
+      SceneLoader.Append("", url, scene, () => {
+        const newMeshes = scene.meshes.slice(meshCountBefore);
+        if (newMeshes.length === 0) return;
+        const root = newMeshes.find((m) => m.parent === null) || newMeshes[0];
+
+        for (const m of newMeshes) {
+          if (!m.material && (m.getTotalVertices?.() ?? 0) > 0) {
+            const mat = new PBRMaterial(`${name}_mat_${m.uniqueId}`, scene);
+            mat.diffuseColor = new Color3(0.6, 0.4, 0.2);
+            mat.metallic = 0.1;
+            mat.roughness = 0.7;
+            m.material = mat;
+          }
+          m.castShadow = true;
+          m.receiveShadow = true;
+        }
+
+        root.position = spawnPoint;
+        if (f.angle_rad) {
+          root.rotation.y = f.angle_rad;
+          yawAngleRef.current.set(root, f.angle_rad);
+        } else {
+          yawAngleRef.current.set(root, 0);
+        }
+
+        const entry = {
+          name,
+          position: [spawnPoint.x - bounds.cx, 0, spawnPoint.z - bounds.cz],
+          rotation: [0, f.angle_rad || 0, 0],
+          scaling: [1, 1, 1],
+          url,
+          mesh: root,
+        };
+
+        for (const m of newMeshes) {
+          meshToModelRef.current.set(m, { entry, root });
+        }
+
+        setPlacedModels((prev) => [...prev, entry]);
+      });
+    });
+  }, [furniture, pixelsPerMeter, bounds]);
+
   useEffect(() => {
     removePlacedModelRef.current = removePlacedModel;
   }, [removePlacedModel]);
@@ -1505,7 +1662,7 @@ export default function Viewer3D({
     // straight through; shadow flags don't survive the rebuild, so they're
     // reapplied below on whatever mesh array comes back (a mix of untouched
     // originals and CSG results).
-    const cutWallMeshes =
+    const cutWithWindows =
       windows && windows.length > 0
         ? cutWindowOpenings(
             windows,
@@ -1520,6 +1677,21 @@ export default function Viewer3D({
             scene,
           )
         : wallMeshes;
+
+    const cutWallMeshes =
+      doors && doors.length > 0
+        ? cutDoorOpenings(
+            doors,
+            cutWithWindows,
+            {
+              scale: 1 / pixelsPerMeter,
+              wallThickness: wallThicknessMeters,
+              doorHeight: 2.1,
+            },
+            scene,
+          )
+        : cutWithWindows;
+
     cutWallMeshes.forEach((mesh) => {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -1527,9 +1699,10 @@ export default function Viewer3D({
 
     wallMeshesRef.current = cutWallMeshes;
 
-    // Store edges/windows in refs so export can access them
+    // Store edges/windows/doors in refs so export can access them
     edgesRef.current = edges;
     windowsRef.current = windows;
+    doorsRef.current = doors;
 
     const ourMeshes = [...cutWallMeshes];
 
@@ -1746,6 +1919,7 @@ export default function Viewer3D({
   }, [
     edges,
     windows,
+    doors,
     pixelsPerMeter,
     cameraDistance,
     bounds,
@@ -1852,6 +2026,8 @@ export default function Viewer3D({
         onExportScene={handleExportScene}
         onImportScene={handleImportScene}
         onRemovePlacedModel={removePlacedModel}
+        onAutoFurnish={handleAutoFurnish}
+        furnitureCount={furniture ? furniture.filter((f) => f.model_file).length : 0}
       />
     </div>
   );

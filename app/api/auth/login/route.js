@@ -17,13 +17,19 @@ export async function POST(request) {
   const password = body.password || "";
 
   if (!email || !password) {
-    return NextResponse.json({ error: "Enter email and password." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Enter email and password." },
+      { status: 400 },
+    );
   }
 
   const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
   // Same message for both cases so we don't leak which emails exist.
   if (!user || !bcrypt.compareSync(password, user.password)) {
-    return NextResponse.json({ error: "Wrong email or password." }, { status: 401 });
+    return NextResponse.json(
+      { error: "Wrong email or password." },
+      { status: 401 },
+    );
   }
 
   const token = createSession(user.id);

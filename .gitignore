@@ -46,3 +46,8 @@ public/uploads/
 *.db
 *.db-wal
 *.db-shm
+
+# Python backend
+backend/.venv/
+backend/**/__pycache__/
+*.pyc

@@ -1043,6 +1043,15 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [edges, setEdges] = useState(null);
   const [nodes, setNodes] = useState(null);
   const [windows, setWindows] = useState(null);
+  const [doors, setDoors] = useState([]);
+  const [furniture, setFurniture] = useState([]);
+  const [aiStats, setAiStats] = useState(null);
+  const [detectorMode, setDetectorMode] = useState("ai"); // "ai" | "classic"
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [conf, setConf] = useState(0.12);
+  const [showFurniture, setShowFurniture] = useState(true);
+  const [showDoors, setShowDoors] = useState(true);
+  const [showWindows, setShowWindows] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState("2d");
   const [pixelsPerMeter, setPixelsPerMeter] = useState(50);
@@ -1050,20 +1059,119 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [wallThickness, setWallThickness] = useState(0.15);
   const [error, setError] = useState("");
 
-  const runDetection = useCallback(async (img) => {
-    if (cvStatus !== "ready") return;
-    setProcessing(true);
-    setError("");
-    try {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const {
-        edges: detectedEdges,
-        nodes: detectedNodes,
-        windows: detectedWindows,
-      } = extractWallGraph(canvas, img);
+  // Check if Python AI backend is online
+  useEffect(() => {
+    fetch("/api/ai/health")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.status === "healthy") {
+          setAiAvailable(true);
+        }
+      })
+      .catch(() => {
+        setAiAvailable(false);
+      });
+  }, []);
 
-      // Draw overlay on canvas — must use the same scale/offset as buildSkeleton
+  const drawOverlay = useCallback(
+    (img, edgeList, winList, doorList, furnList) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !img) return;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+      const s = Math.min(CANVAS_W / img.width, CANVAS_H / img.height);
+      const w = img.width * s;
+      const h = img.height * s;
+      const ox = (CANVAS_W - w) / 2;
+      const oy = (CANVAS_H - h) / 2;
+      ctx.drawImage(img, ox, oy, w, h);
+
+      // 1. Walls (Red)
+      if (edgeList && edgeList.length > 0) {
+        ctx.strokeStyle = "#e5484d";
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        for (const edge of edgeList) {
+          if (edge.points.length < 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(edge.points[0][0], edge.points[0][1]);
+          for (let i = 1; i < edge.points.length; i++) {
+            ctx.lineTo(edge.points[i][0], edge.points[i][1]);
+          }
+          if (edge.closed) ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      // 2. Windows (Bright Cyan)
+      if (showWindows && winList && winList.length > 0) {
+        ctx.strokeStyle = "#00e5ff";
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        for (const win of winList) {
+          if (!win.start || !win.end) continue;
+          ctx.beginPath();
+          ctx.moveTo(win.start[0], win.start[1]);
+          ctx.lineTo(win.end[0], win.end[1]);
+          ctx.stroke();
+        }
+      }
+
+      // 3. Doors (Amber / Orange)
+      if (showDoors && doorList && doorList.length > 0) {
+        ctx.strokeStyle = "#ff9800";
+        ctx.lineWidth = 4;
+        ctx.lineCap = "round";
+        for (const door of doorList) {
+          if (!door.start || !door.end) continue;
+          ctx.beginPath();
+          ctx.moveTo(door.start[0], door.start[1]);
+          ctx.lineTo(door.end[0], door.end[1]);
+          ctx.stroke();
+        }
+      }
+
+      // 4. Furniture (Emerald bounding boxes with labels)
+      if (showFurniture && furnList && furnList.length > 0) {
+        ctx.lineWidth = 1.5;
+        for (const f of furnList) {
+          const bx = f.canvas_box || [0, 0, 0, 0];
+          const bw = bx[2] - bx[0];
+          const bh = bx[3] - bx[1];
+          if (bw <= 0 || bh <= 0) continue;
+
+          ctx.strokeStyle = "rgba(16, 185, 129, 0.9)";
+          ctx.fillStyle = "rgba(16, 185, 129, 0.12)";
+          ctx.fillRect(bx[0], bx[1], bw, bh);
+          ctx.strokeRect(bx[0], bx[1], bw, bh);
+
+          // Label pill
+          const label = (f.label || "item").toUpperCase();
+          const textW = label.length * 6.5 + 8;
+          ctx.fillStyle = "rgba(16, 185, 129, 0.9)";
+          ctx.fillRect(bx[0], Math.max(0, bx[1] - 14), textW, 14);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 9px monospace";
+          ctx.fillText(label, bx[0] + 4, Math.max(10, bx[1] - 3));
+        }
+      }
+    },
+    [showWindows, showDoors, showFurniture],
+  );
+
+  const runDetection = useCallback(
+    async (img, mode = detectorMode) => {
+      setProcessing(true);
+      setError("");
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        setProcessing(false);
+        return;
+      }
+
+      // Pre-draw image on canvas
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
       const s = Math.min(CANVAS_W / img.width, CANVAS_H / img.height);
@@ -1073,47 +1181,83 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
       const oy = (CANVAS_H - h) / 2;
       ctx.drawImage(img, ox, oy, w, h);
 
-      ctx.strokeStyle = "red";
-      ctx.lineWidth = 2;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      for (const edge of detectedEdges) {
-        if (edge.points.length < 2) continue;
-        ctx.beginPath();
-        ctx.moveTo(edge.points[0][0], edge.points[0][1]);
-        for (let i = 1; i < edge.points.length; i++) {
-          ctx.lineTo(edge.points[i][0], edge.points[i][1]);
+      if (mode === "ai") {
+        try {
+          const blob = await new Promise((resolve) =>
+            canvas.toBlob(resolve, "image/png"),
+          );
+          const formData = new FormData();
+          formData.append("file", blob, "plan.png");
+          formData.append("conf", conf.toString());
+          formData.append("use_hybrid", "true");
+          formData.append("canvas_w", CANVAS_W.toString());
+          formData.append("canvas_h", CANVAS_H.toString());
+
+          const res = await fetch("/api/ai/detect", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            throw new Error(
+              `AI Server returned status ${res.status}. Falling back to Classic OpenCV.`,
+            );
+          }
+
+          const data = await res.json();
+          setEdges(data.wall_edges || []);
+          setWindows(data.windows || []);
+          setDoors(data.doors || []);
+          setFurniture(data.furniture || []);
+          setAiStats(data.stats);
+
+          drawOverlay(
+            img,
+            data.wall_edges || [],
+            data.windows || [],
+            data.doors || [],
+            data.furniture || [],
+          );
+          setProcessing(false);
+          return;
+        } catch (err) {
+          console.warn("AI detection failed, switching to classic:", err);
+          setError(err.message);
+          // Fall through to classic OpenCV
         }
-        if (edge.closed) ctx.closePath();
-        ctx.stroke();
       }
 
-      ctx.fillStyle = "#1565c0";
-      for (const [nx, ny] of detectedNodes) {
-        ctx.beginPath();
-        ctx.arc(nx, ny, 3, 0, Math.PI * 2);
-        ctx.fill();
+      // Classic OpenCV fallback
+      if (cvStatus !== "ready") {
+        setError("OpenCV is still loading...");
+        setProcessing(false);
+        return;
       }
 
-      ctx.strokeStyle = "#00c853";
-      ctx.lineWidth = 4;
-      for (const win of detectedWindows) {
-        ctx.beginPath();
-        ctx.moveTo(win.start[0], win.start[1]);
-        ctx.lineTo(win.end[0], win.end[1]);
-        ctx.stroke();
-      }
+      try {
+        const {
+          edges: detectedEdges,
+          nodes: detectedNodes,
+          windows: detectedWindows,
+        } = extractWallGraph(canvas, img);
 
-      setEdges(detectedEdges);
-      setNodes(detectedNodes);
-      setWindows(detectedWindows);
-    } catch (err) {
-      console.error("Floorplan detection failed:", err);
-      setError(err.message || "Detection failed");
-    } finally {
-      setProcessing(false);
-    }
-  }, [cvStatus]);
+        setEdges(detectedEdges);
+        setNodes(detectedNodes);
+        setWindows(detectedWindows);
+        setDoors([]);
+        setFurniture([]);
+        setAiStats(null);
+
+        drawOverlay(img, detectedEdges, detectedWindows, [], []);
+      } catch (err) {
+        console.error("Floorplan detection failed:", err);
+        setError(err.message || "Detection failed");
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [cvStatus, detectorMode, conf, drawOverlay],
+  );
 
   useEffect(() => {
     if (!imageSrc || cvStatus !== "ready" || view !== "2d") return;
@@ -1137,12 +1281,160 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {cvStatus === "loading" && <p>Loading OpenCV.js...</p>}
-      {cvStatus === "error" && (
-        <p style={{ color: "red" }}>OpenCV failed to load — 2D detection unavailable. 3D viewer will not render.</p>
+      {/* Top AI / Detection Bar */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 10,
+          padding: "10px 14px",
+          background: "var(--paper-raised, #f5f5f5)",
+          border: "1px solid var(--line, #ddd)",
+          borderRadius: 6,
+          fontSize: 13,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontWeight: 600 }}>Detector:</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDetectorMode("ai");
+              if (imgRef.current) runDetection(imgRef.current, "ai");
+            }}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 4,
+              border: "1px solid",
+              borderColor: detectorMode === "ai" ? "var(--accent, #e5484d)" : "#ccc",
+              background: detectorMode === "ai" ? "var(--accent, #e5484d)" : "#fff",
+              color: detectorMode === "ai" ? "#fff" : "#333",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            🤖 AI Model (YOLOv8)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDetectorMode("classic");
+              if (imgRef.current) runDetection(imgRef.current, "classic");
+            }}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 4,
+              border: "1px solid",
+              borderColor: detectorMode === "classic" ? "#1565c0" : "#ccc",
+              background: detectorMode === "classic" ? "#1565c0" : "#fff",
+              color: detectorMode === "classic" ? "#fff" : "#333",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            ⚙️ Classic OpenCV
+          </button>
+          {aiAvailable ? (
+            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 600 }}>
+              ● AI Server Online
+            </span>
+          ) : (
+            <span style={{ color: "#f59e0b", fontSize: 11 }}>
+              ○ AI Backend Standby
+            </span>
+          )}
+        </div>
+
+        {detectorMode === "ai" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+              Sensitivity:
+              <input
+                type="range"
+                min="0.05"
+                max="0.40"
+                step="0.02"
+                value={conf}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  setConf(val);
+                }}
+                onMouseUp={() => {
+                  if (imgRef.current) runDetection(imgRef.current, "ai");
+                }}
+                style={{ width: 80 }}
+              />
+              <span style={{ fontFamily: "monospace" }}>{conf.toFixed(2)}</span>
+            </label>
+
+            {/* Overlays toggle */}
+            <label style={{ fontSize: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showWindows}
+                onChange={(e) => {
+                  setShowWindows(e.target.checked);
+                  if (imgRef.current)
+                    drawOverlay(imgRef.current, edges, e.target.checked ? windows : [], doors, furniture);
+                }}
+              />{" "}
+              <span style={{ color: "#00e5ff", fontWeight: 600 }}>Windows</span>
+            </label>
+            <label style={{ fontSize: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showDoors}
+                onChange={(e) => {
+                  setShowDoors(e.target.checked);
+                  if (imgRef.current)
+                    drawOverlay(imgRef.current, edges, windows, e.target.checked ? doors : [], furniture);
+                }}
+              />{" "}
+              <span style={{ color: "#ff9800", fontWeight: 600 }}>Doors</span>
+            </label>
+            <label style={{ fontSize: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showFurniture}
+                onChange={(e) => {
+                  setShowFurniture(e.target.checked);
+                  if (imgRef.current)
+                    drawOverlay(imgRef.current, edges, windows, doors, e.target.checked ? furniture : []);
+                }}
+              />{" "}
+              <span style={{ color: "#10b981", fontWeight: 600 }}>Furniture</span>
+            </label>
+          </div>
+        )}
+      </div>
+
+      {/* AI Inference Stats Banner */}
+      {aiStats && (
+        <div
+          style={{
+            padding: "6px 12px",
+            background: "rgba(16, 185, 129, 0.1)",
+            border: "1px solid rgba(16, 185, 129, 0.3)",
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: "var(--font-mono, monospace)",
+            color: "#065f46",
+            display: "flex",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>
+            ⚡ <strong>AI Results:</strong> {aiStats.wall_edges} wall segments · {aiStats.doors} doors · {aiStats.windows} windows · {aiStats.furniture} furniture items
+          </span>
+          <span>Inference: {aiStats.inference_time_ms} ms</span>
+        </div>
       )}
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      {processing && <p>Processing floorplan...</p>}
+
+      {cvStatus === "loading" && <p style={{ fontSize: 12, color: "#666" }}>Loading OpenCV.js fallback engine...</p>}
+      {error && <p style={{ color: "red", fontSize: 12 }}>{error}</p>}
+      {processing && <p style={{ color: "var(--accent, #e5484d)", fontWeight: 600 }}>Analyzing architectural blueprint...</p>}
 
       {edges && (
         <div style={SETTINGS_STYLE}>
@@ -1197,6 +1489,8 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         <Viewer3D
           edges={edges}
           windows={windows}
+          doors={doors}
+          furniture={furniture}
           pixelsPerMeter={pixelsPerMeter}
           wallHeightMeters={wallHeight}
           wallThicknessMeters={wallThickness}
