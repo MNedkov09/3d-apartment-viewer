@@ -5,6 +5,10 @@ const nextConfig = {
   async rewrites() {
     return [
       {
+        source: "/api/floorplan/:path*",
+        destination: "http://127.0.0.1:8000/api/:path*",
+      },
+      {
         source: "/api/ai/:path*",
         destination: "http://127.0.0.1:8000/api/:path*",
       },

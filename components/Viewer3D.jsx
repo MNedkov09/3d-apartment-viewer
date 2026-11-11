@@ -27,6 +27,24 @@ import { buildWallMeshes } from "./wallGeometry";
 SceneLoader.RegisterPlugin(new GLTFFileLoader());
 SceneLoader.ShowLoadingScreen = false;
 
+export const FLOOR_MATERIALS = [
+  { id: "wood", name: "Oak Parquet", desc: "Scandinavian natural oak planks", color: "#d7be98" },
+  { id: "walnut", name: "Dark Walnut", desc: "Espresso rich luxury wood", color: "#4a3525" },
+  { id: "marble", name: "Carrara Marble", desc: "Italian polished white stone", color: "#f3f4f6" },
+  { id: "tile", name: "Architectural Tile", desc: "Contemporary porcelain tiles", color: "#c5c9ce" },
+  { id: "concrete", name: "Slate Concrete", desc: "Minimalist industrial finish", color: "#9ca3af" },
+  { id: "terracotta", name: "Tuscan Terracotta", desc: "Warm rustic clay tiles", color: "#b86146" },
+];
+
+export const WALL_FINISHES = [
+  { id: "white", name: "Modern White", desc: "Pure architectural smooth plaster", color: "#f8fafc" },
+  { id: "greige", name: "Warm Greige", desc: "Soft Scandinavian warm neutral", color: "#dfdad0" },
+  { id: "sage", name: "Sage Green", desc: "Serene calm natural accent", color: "#8f9f91" },
+  { id: "navy", name: "Midnight Navy", desc: "Bold dramatic luxury statement", color: "#243342" },
+  { id: "brick", name: "Loft Brick", desc: "Exposed architectural red brick", color: "#b2523e" },
+  { id: "charcoal", name: "Studio Charcoal", desc: "Contemporary industrial matte", color: "#2f3542" },
+];
+
 function rayGroundIntersect(scene, cam, canvas, flrY, ptrX, ptrY) {
   const ray = scene.createPickingRay(
     ptrX ?? canvas.clientWidth / 2,
@@ -68,16 +86,15 @@ function computeBounds(edges, pixelsPerMeter) {
   };
 }
 
-function createFloorMaterial(style = "wood", scene) {
-  const mat = new PBRMaterial(`floorMat_${style}`, scene);
-  const tex = new DynamicTexture(`floorTex_${style}`, { width: 512, height: 512 }, scene, true);
+export function createFloorMaterial(style = "wood", scene) {
+  const mat = new PBRMaterial(`floorMat_${style}_${Date.now()}`, scene);
+  const tex = new DynamicTexture(`floorTex_${style}_${Date.now()}`, { width: 512, height: 512 }, scene, true);
   const ctx = tex.getContext();
 
   if (style === "wood") {
     // Warm Scandinavian Oak Hardwood Parquet
-    ctx.fillStyle = "#dfc8a5";
+    ctx.fillStyle = "#d7be98";
     ctx.fillRect(0, 0, 512, 512);
-
     const plankH = 32;
     for (let y = 0; y < 512; y += plankH) {
       const plankW = 128;
@@ -86,9 +103,7 @@ function createFloorMaterial(style = "wood", scene) {
         const tone = 205 + Math.floor(Math.sin(x * 12 + y * 7) * 12);
         ctx.fillStyle = `rgb(${tone + 18}, ${tone}, ${tone - 26})`;
         ctx.fillRect(x + xOffset, y, plankW - 2, plankH - 2);
-
-        // Fine grain lines
-        ctx.fillStyle = "rgba(105, 75, 35, 0.08)";
+        ctx.fillStyle = "rgba(105, 75, 35, 0.09)";
         ctx.fillRect(x + xOffset, y + 6, plankW - 2, 2);
         ctx.fillRect(x + xOffset, y + 16, plankW - 2, 2);
       }
@@ -99,16 +114,68 @@ function createFloorMaterial(style = "wood", scene) {
     mat.albedoTexture = tex;
     mat.albedoTexture.uScale = 4;
     mat.albedoTexture.vScale = 4;
-    mat.roughness = 0.42;
+    mat.roughness = 0.38;
     mat.metallic = 0.02;
+  } else if (style === "walnut") {
+    // Rich Dark Walnut Parquet
+    ctx.fillStyle = "#4a3525";
+    ctx.fillRect(0, 0, 512, 512);
+    const plankH = 32;
+    for (let y = 0; y < 512; y += plankH) {
+      const plankW = 128;
+      const xOffset = ((y / plankH) % 2) * 64;
+      for (let x = -64; x < 512 + 64; x += plankW) {
+        const tone = 65 + Math.floor(Math.sin(x * 12 + y * 7) * 8);
+        ctx.fillStyle = `rgb(${tone + 16}, ${tone + 4}, ${tone - 10})`;
+        ctx.fillRect(x + xOffset, y, plankW - 2, plankH - 2);
+        ctx.fillStyle = "rgba(20, 10, 5, 0.25)";
+        ctx.fillRect(x + xOffset, y + 8, plankW - 2, 2);
+      }
+      ctx.fillStyle = "#2c1d12";
+      ctx.fillRect(0, y + plankH - 2, 512, 2);
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 4;
+    mat.albedoTexture.vScale = 4;
+    mat.roughness = 0.32;
+    mat.metallic = 0.04;
+  } else if (style === "marble") {
+    // Carrara White Italian Polished Marble
+    ctx.fillStyle = "#f4f5f7";
+    ctx.fillRect(0, 0, 512, 512);
+    ctx.strokeStyle = "rgba(180, 185, 195, 0.35)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(30, 0); ctx.bezierCurveTo(120, 180, 200, 240, 310, 512);
+    ctx.moveTo(250, 0); ctx.bezierCurveTo(340, 140, 420, 300, 490, 512);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(160, 165, 175, 0.2)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 150); ctx.bezierCurveTo(160, 200, 320, 120, 512, 240);
+    ctx.stroke();
+    // Subtle grout lines
+    ctx.strokeStyle = "rgba(200, 205, 215, 0.4)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, 255, 255);
+    ctx.strokeRect(257, 1, 254, 255);
+    ctx.strokeRect(1, 257, 255, 254);
+    ctx.strokeRect(257, 257, 254, 254);
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 3;
+    mat.albedoTexture.vScale = 3;
+    mat.roughness = 0.18;
+    mat.metallic = 0.08;
   } else if (style === "tile") {
-    // Modern Architectural Neutral Tile
-    ctx.fillStyle = "#b0b4b9";
+    // Modern Architectural Grey Tile
+    ctx.fillStyle = "#c5c9ce";
     ctx.fillRect(0, 0, 512, 512);
     const tileSize = 128;
     for (let y = 0; y < 512; y += tileSize) {
       for (let x = 0; x < 512; x += tileSize) {
-        const tone = 230 + Math.floor(Math.cos(x + y) * 8);
+        const tone = 225 + Math.floor(Math.cos(x + y) * 6);
         ctx.fillStyle = `rgb(${tone}, ${tone}, ${tone})`;
         ctx.fillRect(x + 2, y + 2, tileSize - 4, tileSize - 4);
       }
@@ -118,12 +185,91 @@ function createFloorMaterial(style = "wood", scene) {
     mat.albedoTexture.uScale = 4;
     mat.albedoTexture.vScale = 4;
     mat.roughness = 0.28;
-    mat.metallic = 0.08;
-  } else {
-    // Minimalist Contemporary Studio Concrete
-    mat.albedoColor = new Color3(0.90, 0.90, 0.88);
-    mat.roughness = 0.65;
+    mat.metallic = 0.06;
+  } else if (style === "terracotta") {
+    // Tuscan Terracotta Warm Clay
+    ctx.fillStyle = "#b86146";
+    ctx.fillRect(0, 0, 512, 512);
+    const tileSize = 128;
+    for (let y = 0; y < 512; y += tileSize) {
+      for (let x = 0; x < 512; x += tileSize) {
+        const tone = 180 + Math.floor(Math.sin(x * 7 + y) * 12);
+        ctx.fillStyle = `rgb(${tone + 10}, ${Math.floor(tone * 0.52)}, ${Math.floor(tone * 0.38)})`;
+        ctx.fillRect(x + 3, y + 3, tileSize - 6, tileSize - 6);
+      }
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 4;
+    mat.albedoTexture.vScale = 4;
+    mat.roughness = 0.45;
     mat.metallic = 0.02;
+  } else {
+    // Minimalist Contemporary Slate Concrete
+    ctx.fillStyle = "#9ca3af";
+    ctx.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 400; i++) {
+      const rx = Math.random() * 512;
+      const ry = Math.random() * 512;
+      const tone = 140 + Math.floor(Math.random() * 30);
+      ctx.fillStyle = `rgba(${tone}, ${tone}, ${tone}, 0.15)`;
+      ctx.fillRect(rx, ry, 3, 3);
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 4;
+    mat.albedoTexture.vScale = 4;
+    mat.roughness = 0.55;
+    mat.metallic = 0.02;
+  }
+  return mat;
+}
+
+export function createWallMaterial(style = "white", scene) {
+  const mat = new PBRMaterial(`wallMat_${style}_${Date.now()}`, scene);
+
+  if (style === "brick") {
+    const tex = new DynamicTexture(`brickTex_${Date.now()}`, { width: 512, height: 512 }, scene, true);
+    const ctx = tex.getContext();
+    ctx.fillStyle = "#c8c4be";
+    ctx.fillRect(0, 0, 512, 512);
+    const rowH = 32;
+    for (let y = 0; y < 512; y += rowH) {
+      const brickW = 80;
+      const xOffset = ((y / rowH) % 2) * 40;
+      for (let x = -40; x < 512 + 40; x += brickW) {
+        const tone = 150 + Math.floor(Math.sin(x * 17 + y) * 20);
+        ctx.fillStyle = `rgb(${tone + 30}, ${Math.floor(tone * 0.55)}, ${Math.floor(tone * 0.45)})`;
+        ctx.fillRect(x + xOffset + 2, y + 2, brickW - 4, rowH - 4);
+      }
+    }
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.albedoTexture.uScale = 3;
+    mat.albedoTexture.vScale = 2;
+    mat.roughness = 0.85;
+    mat.metallic = 0.0;
+  } else if (style === "greige") {
+    mat.albedoColor = new Color3(0.88, 0.86, 0.82);
+    mat.roughness = 0.88;
+    mat.metallic = 0.0;
+  } else if (style === "sage") {
+    mat.albedoColor = new Color3(0.58, 0.65, 0.59);
+    mat.roughness = 0.85;
+    mat.metallic = 0.0;
+  } else if (style === "navy") {
+    mat.albedoColor = new Color3(0.14, 0.20, 0.26);
+    mat.roughness = 0.82;
+    mat.metallic = 0.02;
+  } else if (style === "charcoal") {
+    mat.albedoColor = new Color3(0.18, 0.21, 0.25);
+    mat.roughness = 0.85;
+    mat.metallic = 0.0;
+  } else {
+    // Pure Architectural White
+    mat.albedoColor = new Color3(0.96, 0.96, 0.95);
+    mat.roughness = 0.88;
+    mat.metallic = 0.0;
   }
   return mat;
 }
@@ -158,20 +304,20 @@ function createBathroomFixtures(fixtures, opts, scene) {
     if (f.label === "toilet") {
       const base = MeshBuilder.CreateCylinder(
         `toilet_bowl_${i}`,
-        { diameterTop: 0.38, diameterBottom: 0.28, height: 0.42 },
+        { diameterTop: 0.30, diameterBottom: 0.22, height: 0.40 },
         scene,
       );
-      base.position.set(cx, 0.21, cz);
+      base.position.set(cx, 0.20, cz);
       base.material = ceramicMat;
       base.castShadow = true;
       base.receiveShadow = true;
 
       const cistern = MeshBuilder.CreateBox(
         `toilet_tank_${i}`,
-        { width: 0.42, depth: 0.22, height: 0.44 },
+        { width: 0.34, depth: 0.18, height: 0.38 },
         scene,
       );
-      cistern.position.set(cx, 0.52, cz - 0.14);
+      cistern.position.set(cx, 0.48, cz - 0.12);
       cistern.material = ceramicMat;
       cistern.castShadow = true;
       cistern.receiveShadow = true;
@@ -179,39 +325,39 @@ function createBathroomFixtures(fixtures, opts, scene) {
     } else if (f.label === "sink") {
       const vanity = MeshBuilder.CreateBox(
         `vanity_${i}`,
-        { width: 0.6, depth: 0.45, height: 0.82 },
+        { width: 0.42, depth: 0.35, height: 0.78 },
         scene,
       );
-      vanity.position.set(cx, 0.41, cz);
+      vanity.position.set(cx, 0.39, cz);
       vanity.material = ceramicMat;
       vanity.castShadow = true;
       vanity.receiveShadow = true;
 
       const tap = MeshBuilder.CreateCylinder(
         `tap_${i}`,
-        { diameter: 0.04, height: 0.16 },
+        { diameter: 0.03, height: 0.14 },
         scene,
       );
-      tap.position.set(cx, 0.86, cz - 0.14);
+      tap.position.set(cx, 0.82, cz - 0.10);
       tap.material = chromeMat;
       tap.castShadow = true;
       fixtureMeshes.push(vanity, tap);
     } else if (f.label === "shower") {
       const tray = MeshBuilder.CreateBox(
         `shower_tray_${i}`,
-        { width: 0.85, depth: 0.85, height: 0.08 },
+        { width: 0.80, depth: 0.80, height: 0.06 },
         scene,
       );
-      tray.position.set(cx, 0.04, cz);
+      tray.position.set(cx, 0.03, cz);
       tray.material = ceramicMat;
       tray.receiveShadow = true;
 
       const glass = MeshBuilder.CreateBox(
         `shower_glass_${i}`,
-        { width: 0.85, depth: 0.04, height: 2.0 },
+        { width: 0.80, depth: 0.03, height: 1.85 },
         scene,
       );
-      glass.position.set(cx, 1.04, cz + 0.4);
+      glass.position.set(cx, 0.95, cz + 0.38);
       glass.material = glassMat;
       glass.castShadow = true;
       fixtureMeshes.push(tray, glass);
@@ -281,7 +427,7 @@ function cutWindowOpenings(windows, wallMeshes, opts, scene) {
         wallMesh.dispose();
         remainingMeshes[i] = resultMesh;
       } catch (e) {
-        // Continue if CSG encounters collinear edge
+        // Collinear edge handling
       }
     }
     cutter.dispose();
@@ -350,7 +496,7 @@ function cutDoorOpenings(doors, wallMeshes, opts, scene) {
         wallMesh.dispose();
         remainingMeshes[i] = resultMesh;
       } catch (e) {
-        // Continue if CSG encounters collinear edge
+        // Collinear edge handling
       }
     }
     cutter.dispose();
@@ -440,7 +586,7 @@ async function importSceneJSON(file) {
   return data;
 }
 
-function ModelPanel({
+function RightSidePanel({
   availableModels,
   placedModels,
   draggedModel,
@@ -452,206 +598,516 @@ function ModelPanel({
   onAutoFurnish,
   furnitureCount = 0,
   isAutoFurnishing = false,
+  floorStyle,
+  wallStyle,
+  onApplyFloorMaterial,
+  onApplyWallMaterial,
+  stats,
 }) {
+  const [activeTab, setActiveTab] = useState("furniture"); // "furniture" | "materials" | "scene"
+
   return (
     <div
       style={{
-        width: 220,
-        background: "rgba(24, 27, 32, 0.88)",
-        backdropFilter: "blur(12px)",
+        width: 290,
+        background: "rgba(20, 24, 33, 0.94)",
+        backdropFilter: "blur(14px)",
         color: "#fff",
-        padding: "12px 14px",
-        overflowY: "auto",
         display: "flex",
         flexDirection: "column",
-        gap: 8,
         fontSize: 12,
         fontFamily: "var(--font-mono, monospace)",
-        borderLeft: "1px solid rgba(255,255,255,0.1)",
+        borderLeft: "1px solid rgba(255,255,255,0.12)",
+        zIndex: 10,
+        height: "100%",
+        userSelect: "none",
       }}
     >
-      {furnitureCount > 0 && onAutoFurnish && (
+      {/* Top Panel Tabs */}
+      <div
+        style={{
+          display: "flex",
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+          background: "rgba(15, 18, 25, 0.6)",
+        }}
+      >
         <button
-          onClick={onAutoFurnish}
-          disabled={isAutoFurnishing}
+          onClick={() => setActiveTab("furniture")}
           style={{
-            background: isAutoFurnishing ? "#6b7280" : "#10b981",
-            color: "#fff",
+            flex: 1,
+            padding: "10px 4px",
+            background: activeTab === "furniture" ? "rgba(255,255,255,0.1)" : "transparent",
+            color: activeTab === "furniture" ? "#fff" : "rgba(255,255,255,0.6)",
             border: "none",
-            borderRadius: 6,
-            padding: "9px 12px",
-            fontSize: 12,
+            borderBottom: activeTab === "furniture" ? "2px solid #38bdf8" : "2px solid transparent",
+            cursor: "pointer",
+            fontSize: 11,
             fontWeight: 600,
-            cursor: isAutoFurnishing ? "wait" : "pointer",
-            textAlign: "center",
-            boxShadow: "0 2px 6px rgba(16, 185, 129, 0.3)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
             transition: "all 0.15s ease",
           }}
         >
-          {isAutoFurnishing ? "⏳ Furnishing..." : `✨ Auto-Furnish (${furnitureCount})`}
+          🪑 Furniture
         </button>
-      )}
-
-      {placedModels.length > 0 && onClearAllModels && (
         <button
-          onClick={onClearAllModels}
+          onClick={() => setActiveTab("materials")}
           style={{
-            background: "rgba(239, 68, 68, 0.15)",
-            color: "#fca5a5",
-            border: "1px solid rgba(239, 68, 68, 0.3)",
-            borderRadius: 6,
-            padding: "5px 10px",
-            fontSize: 11,
-            fontWeight: 500,
+            flex: 1,
+            padding: "10px 4px",
+            background: activeTab === "materials" ? "rgba(255,255,255,0.1)" : "transparent",
+            color: activeTab === "materials" ? "#fff" : "rgba(255,255,255,0.6)",
+            border: "none",
+            borderBottom: activeTab === "materials" ? "2px solid #38bdf8" : "2px solid transparent",
             cursor: "pointer",
-            textAlign: "center",
+            fontSize: 11,
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            transition: "all 0.15s ease",
           }}
         >
-          🗑️ Clear Furniture ({placedModels.length})
+          🎨 Materials
         </button>
-      )}
-
-      <div
-        style={{
-          fontWeight: 600,
-          fontSize: 11,
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          color: "rgba(255,255,255,0.5)",
-          marginTop: 4,
-        }}
-      >
-        Models Catalog
+        <button
+          onClick={() => setActiveTab("scene")}
+          style={{
+            flex: 1,
+            padding: "10px 4px",
+            background: activeTab === "scene" ? "rgba(255,255,255,0.1)" : "transparent",
+            color: activeTab === "scene" ? "#fff" : "rgba(255,255,255,0.6)",
+            border: "none",
+            borderBottom: activeTab === "scene" ? "2px solid #38bdf8" : "2px solid transparent",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            transition: "all 0.15s ease",
+          }}
+        >
+          💾 Scene
+        </button>
       </div>
-      {availableModels.length === 0 && (
-        <div style={{ color: "rgba(255,255,255,0.4)", fontStyle: "italic" }}>
-          No models yet.
-        </div>
-      )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
-        {availableModels.map((m, i) => (
+
+      {/* Tab 1: Furniture Catalog & Placed Items */}
+      {activeTab === "furniture" && (
+        <div
+          style={{
+            flex: 1,
+            padding: "12px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          {furnitureCount > 0 && onAutoFurnish && (
+            <button
+              onClick={onAutoFurnish}
+              disabled={isAutoFurnishing}
+              style={{
+                background: isAutoFurnishing ? "#6b7280" : "#10b981",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                padding: "9px 12px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: isAutoFurnishing ? "wait" : "pointer",
+                textAlign: "center",
+                boxShadow: "0 2px 8px rgba(16, 185, 129, 0.35)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+              }}
+            >
+              {isAutoFurnishing ? "⏳ Positioning Models..." : `✨ Auto-Furnish (${furnitureCount})`}
+            </button>
+          )}
+
+          {placedModels.length > 0 && onClearAllModels && (
+            <button
+              onClick={onClearAllModels}
+              style={{
+                background: "rgba(239, 68, 68, 0.15)",
+                color: "#fca5a5",
+                border: "1px solid rgba(239, 68, 68, 0.3)",
+                borderRadius: 6,
+                padding: "6px 10px",
+                fontSize: 11,
+                fontWeight: 500,
+                cursor: "pointer",
+                textAlign: "center",
+              }}
+            >
+              🗑️ Clear Furniture ({placedModels.length})
+            </button>
+          )}
+
           <div
-            key={i}
-            onClick={() => onPlaceModel(m)}
             style={{
-              padding: "5px 8px",
-              borderRadius: 4,
-              cursor: "pointer",
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid transparent",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              transition: "background 0.1s",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.12)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+              fontWeight: 600,
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "rgba(255,255,255,0.5)",
+              marginTop: 4,
             }}
           >
-            {m.thumbnail ? (
-              <img
-                src={m.thumbnail}
-                alt=""
-                width={32}
-                height={32}
-                style={{ flexShrink: 0, objectFit: "contain" }}
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            ) : (
-              <div style={{ width: 16, height: 16, flexShrink: 0 }} />
-            )}
-            <span
-              style={{
-                flex: 1,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                fontSize: 11,
-              }}
-            >
-              {m.name}
-            </span>
-            <span
-              style={{
-                fontSize: 10,
-                background: "rgba(255,255,255,0.15)",
-                padding: "1px 5px",
-                borderRadius: 3,
-              }}
-            >
-              +
-            </span>
+            Models Catalog
           </div>
-        ))}
-      </div>
 
-      <div
-        style={{
-          marginTop: 6,
-          fontWeight: 600,
-          fontSize: 11,
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          color: "rgba(255,255,255,0.5)",
-        }}
-      >
-        Scene State
-      </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        <button
-          onClick={onExportScene}
-          disabled={placedModels.length === 0}
-          style={{
-            flex: 1,
-            padding: "6px 0",
-            background: "rgba(255,255,255,0.1)",
-            color: "#fff",
-            border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 4,
-            cursor: placedModels.length === 0 ? "not-allowed" : "pointer",
-            opacity: placedModels.length === 0 ? 0.4 : 1,
-            fontSize: 10,
-          }}
-        >
-          💾 Export
-        </button>
-        <label
-          style={{
-            flex: 1,
-            padding: "6px 0",
-            background: "rgba(255,255,255,0.1)",
-            color: "#fff",
-            border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 4,
-            cursor: "pointer",
-            fontSize: 10,
-            textAlign: "center",
-          }}
-        >
-          📂 Import
-          <input
-            type="file"
-            accept=".json"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) onImportScene(file);
-              e.target.value = "";
-            }}
-          />
-        </label>
-      </div>
-
-      {placedModels.length > 0 && (
-        <>
           <div
             style={{
-              marginTop: 6,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              maxHeight: 210,
+              overflowY: "auto",
+              paddingRight: 2,
+            }}
+          >
+            {availableModels.map((m, i) => (
+              <div
+                key={i}
+                onClick={() => onPlaceModel(m)}
+                style={{
+                  padding: "5px 8px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  transition: "background 0.15s ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.14)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                }}
+              >
+                {m.thumbnail ? (
+                  <img
+                    src={m.thumbnail}
+                    alt=""
+                    width={32}
+                    height={32}
+                    style={{ flexShrink: 0, objectFit: "contain", borderRadius: 4 }}
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                ) : (
+                  <div style={{ width: 28, height: 28, flexShrink: 0, background: "rgba(255,255,255,0.1)", borderRadius: 4 }} />
+                )}
+                <span
+                  style={{
+                    flex: 1,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    fontSize: 11,
+                  }}
+                >
+                  {m.name}
+                </span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: "#38bdf8",
+                    padding: "2px 6px",
+                    background: "rgba(56, 189, 248, 0.15)",
+                    borderRadius: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  + Add
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {placedModels.length > 0 && (
+            <>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontWeight: 600,
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "rgba(255,255,255,0.5)",
+                }}
+              >
+                In Scene ({placedModels.length})
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                  maxHeight: 160,
+                  overflowY: "auto",
+                  paddingRight: 2,
+                }}
+              >
+                {placedModels.map((m, i) => {
+                  const isDragging = draggedModel && draggedModel.mesh === m.mesh;
+                  return (
+                    <div
+                      key={`placed-${i}`}
+                      style={{
+                        padding: "5px 8px",
+                        borderRadius: 4,
+                        background: isDragging
+                          ? "rgba(56, 189, 248, 0.25)"
+                          : "rgba(255,255,255,0.06)",
+                        border: isDragging
+                          ? "1px solid rgba(56, 189, 248, 0.5)"
+                          : "1px solid transparent",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                      }}
+                    >
+                      <span
+                        style={{
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {m.name}
+                      </span>
+                      <button
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onRemovePlacedModel(m);
+                        }}
+                        title="Remove from scene"
+                        type="button"
+                        style={{
+                          background: "rgba(239, 68, 68, 0.25)",
+                          color: "#fca5a5",
+                          border: "none",
+                          borderRadius: 3,
+                          width: 18,
+                          height: 18,
+                          fontSize: 10,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Tab 2: Materials Palette (Drag & Drop + Click to Apply) */}
+      {activeTab === "materials" && (
+        <div
+          style={{
+            flex: 1,
+            padding: "12px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", lineHeight: 1.4 }}>
+            💡 <strong>Drag & Drop</strong> any material onto the 3D floor or walls, or click <strong>Apply</strong>.
+          </div>
+
+          {/* Flooring Materials */}
+          <div>
+            <div
+              style={{
+                fontWeight: 600,
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "#38bdf8",
+                marginBottom: 6,
+              }}
+            >
+              🪵 Floor Finishes
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {FLOOR_MATERIALS.map((mat) => {
+                const isSelected = floorStyle === mat.id;
+                return (
+                  <div
+                    key={mat.id}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(
+                        "application/json",
+                        JSON.stringify({ type: "floor", id: mat.id, name: mat.name }),
+                      );
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      background: isSelected ? "rgba(56, 189, 248, 0.15)" : "rgba(255,255,255,0.06)",
+                      border: isSelected ? "1px solid #38bdf8" : "1px solid rgba(255,255,255,0.08)",
+                      cursor: "grab",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: 4,
+                        background: mat.color,
+                        boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.3)",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>{mat.name}</div>
+                      <div style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                        {mat.desc}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onApplyFloorMaterial(mat.id)}
+                      style={{
+                        background: isSelected ? "#0284c7" : "rgba(255,255,255,0.12)",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 4,
+                        padding: "3px 7px",
+                        fontSize: 10,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {isSelected ? "Active" : "Apply"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Wall Finishes */}
+          <div>
+            <div
+              style={{
+                fontWeight: 600,
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "#a78bfa",
+                marginBottom: 6,
+              }}
+            >
+              🧱 Wall Finishes
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {WALL_FINISHES.map((fin) => {
+                const isSelected = wallStyle === fin.id;
+                return (
+                  <div
+                    key={fin.id}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(
+                        "application/json",
+                        JSON.stringify({ type: "wall", id: fin.id, name: fin.name }),
+                      );
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      background: isSelected ? "rgba(167, 139, 250, 0.15)" : "rgba(255,255,255,0.06)",
+                      border: isSelected ? "1px solid #a78bfa" : "1px solid rgba(255,255,255,0.08)",
+                      cursor: "grab",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: 4,
+                        background: fin.color,
+                        boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.3)",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>{fin.name}</div>
+                      <div style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                        {fin.desc}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onApplyWallMaterial(fin.id)}
+                      style={{
+                        background: isSelected ? "#7c3aed" : "rgba(255,255,255,0.12)",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 4,
+                        padding: "3px 7px",
+                        fontSize: 10,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {isSelected ? "Active" : "Apply"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 3: Scene State & Import/Export */}
+      {activeTab === "scene" && (
+        <div
+          style={{
+            flex: 1,
+            padding: "12px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          <div
+            style={{
               fontWeight: 600,
               fontSize: 11,
               textTransform: "uppercase",
@@ -659,66 +1115,103 @@ function ModelPanel({
               color: "rgba(255,255,255,0.5)",
             }}
           >
-            In Scene ({placedModels.length})
+            Scene Presets & Backup
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 150, overflowY: "auto" }}>
-            {placedModels.map((m, i) => {
-              const isDragging = draggedModel && draggedModel.mesh === m.mesh;
-              return (
-                <div
-                  key={`placed-${i}`}
-                  style={{
-                    padding: "4px 6px",
-                    borderRadius: 4,
-                    background: isDragging
-                      ? "rgba(255,255,255,0.2)"
-                      : "rgba(255,255,255,0.06)",
-                    border: isDragging
-                      ? "1px solid rgba(255,255,255,0.4)"
-                      : "1px solid transparent",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 11,
-                  }}
-                >
-                  <span
-                    style={{
-                      flex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {m.name}
-                  </span>
-                  <button
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onRemovePlacedModel(m);
-                    }}
-                    title="Remove from scene"
-                    type="button"
-                    style={{
-                      background: "rgba(255,80,80,0.25)",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: 3,
-                      width: 16,
-                      height: 16,
-                      fontSize: 9,
-                      cursor: "pointer",
-                    }}
-                  >
-                    ✕
-                  </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={onExportScene}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                background: "rgba(255,255,255,0.1)",
+                color: "#fff",
+                border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              💾 Export JSON
+            </button>
+            <label
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                background: "rgba(255,255,255,0.1)",
+                color: "#fff",
+                border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 600,
+                textAlign: "center",
+              }}
+            >
+              📂 Import JSON
+              <input
+                type="file"
+                accept=".json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) onImportScene(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+
+          <div
+            style={{
+              fontWeight: 600,
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "rgba(255,255,255,0.5)",
+              marginTop: 6,
+            }}
+          >
+            Architectural Metrics
+          </div>
+
+          <div
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              borderRadius: 6,
+              padding: "10px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 11,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "rgba(255,255,255,0.6)" }}>Scale Ratio:</span>
+              <span style={{ fontWeight: 600 }}>32 px / meter</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "rgba(255,255,255,0.6)" }}>Apartment Footprint:</span>
+              <span style={{ fontWeight: 600 }}>~16.2m × 11.2m</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "rgba(255,255,255,0.6)" }}>Placed Furniture:</span>
+              <span style={{ fontWeight: 600 }}>{placedModels.length} models</span>
+            </div>
+            {stats && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "rgba(255,255,255,0.6)" }}>Wall Segments:</span>
+                  <span style={{ fontWeight: 600 }}>{stats.wall_edges || 0}</span>
                 </div>
-              );
-            })}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "rgba(255,255,255,0.6)" }}>Openings:</span>
+                  <span style={{ fontWeight: 600 }}>{(stats.windows || 0) + (stats.doors || 0)}</span>
+                </div>
+              </>
+            )}
           </div>
-        </>
+        </div>
       )}
     </div>
   );
@@ -730,11 +1223,12 @@ export default function Viewer3D({
   doors = [],
   furniture = [],
   fixtures = [],
-  pixelsPerMeter = 50,
+  pixelsPerMeter = 32,
   wallHeightMeters = 2.7,
   wallThicknessMeters = 0.15,
   sillHeightMeters = 0.9,
   windowHeightMeters = 1.2,
+  stats,
 }) {
   const canvasRef = useRef(null);
   const engineRef = useRef(null);
@@ -743,21 +1237,18 @@ export default function Viewer3D({
   const wallMeshesRef = useRef([]);
   const keysRef = useRef(new Set());
   const floorMeshRef = useRef(null);
-  const floorMatRef = useRef(null);
   const draggedMeshRef = useRef(null);
   const selectedMeshRef = useRef(null);
   const dragOffsetRef = useRef(new Vector3());
   const dragStartPosRef = useRef(new Vector3());
   const isDraggingRef = useRef(false);
+  const meshToModelRef = useRef(new Map());
+  const floorYRef = useRef(0);
+  const edgesRef = useRef(edges);
+  const windowsRef = useRef(windows);
+  const doorsRef = useRef(doors);
   const modelRotationRef = useRef(new Map());
   const yawAngleRef = useRef(new Map());
-  const meshToModelRef = useRef(new Map());
-  const floorYRef = useRef(-0.05);
-  const removePlacedModelRef = useRef(() => {});
-
-  const edgesRef = useRef([]);
-  const windowsRef = useRef([]);
-  const doorsRef = useRef([]);
   const containerRef = useRef(null);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -766,7 +1257,19 @@ export default function Viewer3D({
   const [draggedModel, setDraggedModel] = useState(null);
   const [isAutoFurnishing, setIsAutoFurnishing] = useState(false);
   const [floorStyle, setFloorStyle] = useState("wood");
-  const [wallMode, setWallMode] = useState("full"); // "full" (2.7m) | "cutaway" (1.3m)
+  const [wallStyle, setWallStyle] = useState("white");
+  const [wallMode, setWallMode] = useState("cutaway"); // "cutaway" (1.35m) | "full" (2.7m)
+  const [viewpoint, setViewpointState] = useState("cutaway");
+  const [toastMessage, setToastMessage] = useState(null);
+
+  const toastTimeoutRef = useRef(null);
+  const showToast = useCallback((msg) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastMessage(msg);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 2500);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -785,37 +1288,28 @@ export default function Viewer3D({
   );
 
   const cameraDistance = useMemo(() => {
-    if (!edges || edges.length === 0) return 10;
-    let maxExtent = 1;
-    const scale = 1 / pixelsPerMeter;
-    for (const edge of edges) {
-      for (const [x, y] of edge.points) {
-        maxExtent = Math.max(
-          maxExtent,
-          Math.abs(x * scale),
-          Math.abs(y * scale),
-        );
-      }
-    }
-    return Math.max(maxExtent * 1.6, 8);
-  }, [edges, pixelsPerMeter]);
+    const diag = Math.hypot(bounds.w, bounds.d);
+    return Math.max(diag * 1.05, 8);
+  }, [bounds]);
 
-  const toggleFullscreen = useCallback(() => {
+  const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current;
     if (!el) return;
-    if (!document.fullscreenElement) {
-      el.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen();
+    try {
+      if (!document.fullscreenElement) {
+        await el.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (e) {
+      console.warn("Fullscreen toggle error:", e);
     }
   }, []);
 
   useEffect(() => {
     const onFsChange = () => {
       setIsFullscreen(document.fullscreenElement === containerRef.current);
-      requestAnimationFrame(() => {
-        engineRef.current?.resize();
-      });
+      setTimeout(() => engineRef.current?.resize(), 100);
     };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
@@ -825,9 +1319,11 @@ export default function Viewer3D({
     (mode) => {
       const cam = cameraRef.current;
       if (!cam) return;
+      setViewpointState(mode);
+
       if (mode === "top") {
         cam.alpha = -Math.PI / 2;
-        cam.beta = 0.05;
+        cam.beta = 0.04;
         cam.radius = cameraDistance * 1.15;
         cam.target.set(bounds.cx, 0, bounds.cz);
       } else if (mode === "iso") {
@@ -837,23 +1333,65 @@ export default function Viewer3D({
         cam.target.set(bounds.cx, wallHeightMeters / 2, bounds.cz);
       } else if (mode === "walk") {
         cam.alpha = -Math.PI / 4;
-        cam.beta = Math.PI / 2 - 0.05;
-        cam.radius = 4;
-        cam.target.set(bounds.cx, 1.6, bounds.cz);
+        cam.beta = Math.PI / 2.05;
+        cam.radius = 0.5;
+        cam.target.set(bounds.cx, 1.35, bounds.cz);
       } else if (mode === "living") {
         cam.alpha = -Math.PI / 3;
-        cam.beta = Math.PI / 3.2;
-        cam.radius = cameraDistance * 0.55;
-        cam.target.set(bounds.cx - bounds.w * 0.2, 1.2, bounds.cz + bounds.d * 0.15);
-      } else if (mode === "bed") {
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 0.45;
+        cam.target.set(bounds.cx - bounds.w * 0.28, 1.1, bounds.cz + bounds.d * 0.18);
+      } else if (mode === "kitchen") {
+        cam.alpha = -Math.PI / 1.3;
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 0.42;
+        cam.target.set(bounds.cx + bounds.w * 0.24, 1.1, bounds.cz + bounds.d * 0.18);
+      } else if (mode === "master_bed") {
         cam.alpha = -Math.PI / 1.5;
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 0.42;
+        cam.target.set(bounds.cx + bounds.w * 0.26, 1.1, bounds.cz - bounds.d * 0.25);
+      } else if (mode === "bed_2") {
+        cam.alpha = -Math.PI / 3;
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 0.42;
+        cam.target.set(bounds.cx - bounds.w * 0.05, 1.1, bounds.cz - bounds.d * 0.25);
+      } else if (mode === "bath") {
+        cam.alpha = -Math.PI / 2.4;
         cam.beta = Math.PI / 3.2;
-        cam.radius = cameraDistance * 0.55;
-        cam.target.set(bounds.cx + bounds.w * 0.25, 1.2, bounds.cz - bounds.d * 0.2);
+        cam.radius = cameraDistance * 0.32;
+        cam.target.set(bounds.cx - bounds.w * 0.06, 1.0, bounds.cz - bounds.d * 0.02);
+      } else if (mode === "entry") {
+        cam.alpha = -Math.PI / 2;
+        cam.beta = Math.PI / 3.4;
+        cam.radius = cameraDistance * 0.38;
+        cam.target.set(bounds.cx - bounds.w * 0.02, 1.1, bounds.cz + bounds.d * 0.38);
       }
     },
     [bounds, cameraDistance, wallHeightMeters],
   );
+
+  const applyFloorMaterial = useCallback((styleKey) => {
+    const scene = sceneRef.current;
+    if (!scene || !floorMeshRef.current) return;
+    const newMat = createFloorMaterial(styleKey, scene);
+    floorMeshRef.current.material = newMat;
+    setFloorStyle(styleKey);
+    const mObj = FLOOR_MATERIALS.find((m) => m.id === styleKey);
+    showToast(`✨ Applied ${mObj?.name || styleKey} to Floor`);
+  }, [showToast]);
+
+  const applyWallMaterial = useCallback((styleKey) => {
+    const scene = sceneRef.current;
+    if (!scene || !wallMeshesRef.current) return;
+    const newMat = createWallMaterial(styleKey, scene);
+    wallMeshesRef.current.forEach((m) => {
+      if (m && !m.isDisposed()) m.material = newMat;
+    });
+    setWallStyle(styleKey);
+    const wObj = WALL_FINISHES.find((w) => w.id === styleKey);
+    showToast(`✨ Applied ${wObj?.name || styleKey} to Walls`);
+  }, [showToast]);
 
   // Robust model importer: binds imported meshes to a dedicated TransformNode
   const loadSingleModel = useCallback(
@@ -946,9 +1484,10 @@ export default function Viewer3D({
       const entry = await loadSingleModel(url, centerHit, 0, name);
       if (entry) {
         setPlacedModels((prev) => [...prev, entry]);
+        showToast(`Added ${name} to scene`);
       }
     },
-    [loadSingleModel],
+    [loadSingleModel, showToast],
   );
 
   const handleAutoFurnish = useCallback(async () => {
@@ -976,165 +1515,136 @@ export default function Viewer3D({
 
     if (added.length > 0) {
       setPlacedModels((prev) => [...prev, ...added]);
+      showToast(`✨ Automatically furnished ${added.length} items`);
     }
     setIsAutoFurnishing(false);
-  }, [furniture, pixelsPerMeter, loadSingleModel, isAutoFurnishing]);
+  }, [furniture, isAutoFurnishing, pixelsPerMeter, loadSingleModel, showToast]);
 
-  const removePlacedModel = useCallback((entryToRemove) => {
-    const root =
-      entryToRemove.mesh ||
-      [...meshToModelRef.current.values()].find(
-        (mapping) => mapping.entry === entryToRemove,
-      )?.root;
-    if (!root) return;
-
+  const clearAllModels = useCallback(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
     for (const [mesh, mapping] of meshToModelRef.current.entries()) {
-      if (mapping.entry === entryToRemove || mapping.root === root) {
+      mesh.dispose();
+      mapping.root.dispose();
+    }
+    meshToModelRef.current.clear();
+    setPlacedModels([]);
+    showToast("Cleared all furniture");
+  }, [showToast]);
+
+  const removePlacedModel = useCallback((modelEntry) => {
+    if (!modelEntry || !modelEntry.mesh) return;
+    for (const [mesh, mapping] of meshToModelRef.current.entries()) {
+      if (mapping.entry === modelEntry || mapping.root === modelEntry.mesh) {
         meshToModelRef.current.delete(mesh);
       }
     }
-
-    modelRotationRef.current.delete(root);
-    yawAngleRef.current.delete(root);
-
-    if (selectedMeshRef.current === root) selectedMeshRef.current = null;
-    if (draggedMeshRef.current === root) {
-      draggedMeshRef.current = null;
-      isDraggingRef.current = false;
-      setDraggedModel(null);
-      cameraRef.current?.attachControl(canvasRef.current, true);
-    }
-
-    try {
-      root.dispose(false, true);
-    } catch (e) {}
-
-    setPlacedModels((prev) => prev.filter((p) => p.mesh !== root));
-  }, []);
-
-  const clearAllModels = useCallback(() => {
-    const roots = new Set();
-    for (const { root } of meshToModelRef.current.values()) {
-      roots.add(root);
-    }
-    roots.forEach((root) => {
-      try {
-        root.dispose(false, true);
-      } catch (e) {}
-    });
-    meshToModelRef.current.clear();
-    modelRotationRef.current.clear();
-    yawAngleRef.current.clear();
-    selectedMeshRef.current = null;
-    draggedMeshRef.current = null;
-    isDraggingRef.current = false;
-    setDraggedModel(null);
-    setPlacedModels([]);
-  }, []);
+    modelEntry.mesh.dispose();
+    setPlacedModels((prev) => prev.filter((m) => m !== modelEntry));
+    showToast(`Removed ${modelEntry.name}`);
+  }, [showToast]);
 
   const handleExportScene = useCallback(() => {
-    exportSceneJSON(
-      edgesRef.current,
-      windowsRef.current,
-      doorsRef.current,
-      placedModels,
-      wallHeightMeters,
-      wallThicknessMeters,
-      sillHeightMeters,
-      windowHeightMeters,
-      cameraDistance,
-    );
+    try {
+      exportSceneJSON(
+        edgesRef.current,
+        windowsRef.current,
+        doorsRef.current,
+        placedModels,
+        wallHeightMeters,
+        wallThicknessMeters,
+        sillHeightMeters,
+        windowHeightMeters,
+        cameraDistance,
+      );
+      showToast("💾 Scene JSON exported successfully");
+    } catch (err) {
+      alert(`Export failed: ${err.message}`);
+    }
   }, [
+    cameraDistance,
     placedModels,
     wallHeightMeters,
     wallThicknessMeters,
     sillHeightMeters,
     windowHeightMeters,
-    cameraDistance,
+    showToast,
   ]);
 
   const handleImportScene = useCallback(
     async (file) => {
       try {
         const sceneData = await importSceneJSON(file);
-        if (sceneData.placedModels && sceneData.placedModels.length > 0) {
-          clearAllModels();
-          for (const m of sceneData.placedModels) {
-            const worldX = (m.position?.[0] ?? 0) + bounds.cx;
-            const worldZ = (m.position?.[2] ?? 0) + bounds.cz;
-            const angle = m.rotation?.[1] ?? 0;
-            const entry = await loadSingleModel(m.url, new Vector3(worldX, 0, worldZ), angle, m.name);
-            if (entry) {
-              setPlacedModels((prev) => [...prev, entry]);
-            }
+        clearAllModels();
+        for (const m of sceneData.placedModels) {
+          const worldX = m.position[0] + bounds.cx;
+          const worldZ = m.position[2] + bounds.cz;
+          const angle = Array.isArray(m.rotation) ? m.rotation[1] : 0;
+          const entry = await loadSingleModel(m.url, new Vector3(worldX, 0, worldZ), angle, m.name);
+          if (entry) {
+            setPlacedModels((prev) => [...prev, entry]);
           }
         }
+        showToast("📂 Scene loaded successfully");
       } catch (err) {
         alert(`Import failed: ${err.message}`);
       }
     },
-    [bounds, clearAllModels, loadSingleModel],
+    [bounds, clearAllModels, loadSingleModel, showToast],
   );
 
-  const handleKeyDown = useCallback((e) => {
-    keysRef.current.add(e.key.toLowerCase());
-
-    if (e.key === "Delete" || e.key === "Backspace") {
-      const root = isDraggingRef.current
-        ? draggedMeshRef.current
-        : selectedMeshRef.current;
-      if (!root) return;
-      const tag = document.activeElement?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      e.preventDefault();
-
-      const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
-      if (mapping) {
-        removePlacedModelRef.current(mapping.entry);
-      }
-      return;
-    }
-
-    if (e.key === "r" || e.key === "R") {
-      const root = isDraggingRef.current
-        ? draggedMeshRef.current
-        : selectedMeshRef.current;
-      if (!root) return;
-
-      e.preventDefault();
-      const delta = e.shiftKey ? -Math.PI / 4 : Math.PI / 4;
-      const prevYaw = yawAngleRef.current.get(root) ?? (root.rotation.y || 0);
-      const newYaw = prevYaw + delta;
-      root.rotation.y = newYaw;
-      yawAngleRef.current.set(root, newYaw);
-
-      const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
-      if (mapping?.entry?.rotation) {
-        mapping.entry.rotation[1] = newYaw;
-      }
-    }
-  }, []);
-
-  const handleKeyUp = useCallback((e) => {
-    keysRef.current.delete(e.key.toLowerCase());
-  }, []);
-
+  // Keyboard navigation & model manipulation
   useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+    const onKeyDown = (e) => {
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+
+      keysRef.current.add(e.key.toLowerCase());
+
+      if (e.key === "r" || e.key === "R") {
+        const root = selectedMeshRef.current || draggedMeshRef.current;
+        if (root) {
+          e.preventDefault();
+          const currentYaw = yawAngleRef.current.get(root) ?? 0;
+          const newYaw = currentYaw + Math.PI / 4;
+          yawAngleRef.current.set(root, newYaw);
+          root.rotation.y = newYaw;
+
+          const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
+          if (mapping) {
+            mapping.entry.rotation = [0, newYaw, 0];
+          }
+        }
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const root = selectedMeshRef.current;
+        if (root) {
+          e.preventDefault();
+          const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
+          if (mapping) {
+            removePlacedModel(mapping.entry);
+            selectedMeshRef.current = null;
+          }
+        }
+      }
     };
-  }, [handleKeyDown, handleKeyUp]);
 
-  useEffect(() => {
-    removePlacedModelRef.current = removePlacedModel;
+    const onKeyUp = (e) => {
+      keysRef.current.delete(e.key.toLowerCase());
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, [removePlacedModel]);
 
   // Main 3D Babylon.js Scene Initialization
   useEffect(() => {
-    if (!canvasRef.current || !edges || edges.length === 0) return;
+    if (!canvasRef.current) return;
 
     if (sceneRef.current) {
       wallMeshesRef.current.forEach((m) => m.dispose());
@@ -1150,9 +1660,9 @@ export default function Viewer3D({
 
     const scene = new Scene(engine);
     sceneRef.current = scene;
-    scene.clearColor = new Color4(0.94, 0.96, 0.98, 1);
+    scene.clearColor = new Color4(0.08, 0.11, 0.18, 1);
 
-    const effectiveWallHeight = wallMode === "cutaway" ? 1.3 : wallHeightMeters;
+    const effectiveWallHeight = wallMode === "cutaway" ? 1.35 : wallHeightMeters;
 
     const camera = new ArcRotateCamera(
       "camera",
@@ -1164,9 +1674,9 @@ export default function Viewer3D({
     );
     cameraRef.current = camera;
     camera.attachControl(canvasRef.current, true);
-    camera.lowerRadiusLimit = 2;
+    camera.lowerRadiusLimit = 0.1; // Allows true human eye-level walkthrough
     camera.upperRadiusLimit = 150;
-    camera.lowerBetaLimit = 0.05;
+    camera.lowerBetaLimit = 0.04;
     camera.upperBetaLimit = Math.PI / 2;
     camera.alphaRotationSpeed = 10;
     camera.betaRotationSpeed = 10;
@@ -1226,7 +1736,6 @@ export default function Viewer3D({
     const floorMat = createFloorMaterial(floorStyle, scene);
     floor.material = floorMat;
     floorMeshRef.current = floor;
-    floorMatRef.current = floorMat;
 
     // 5. Build Wall Geometry
     wallMeshesRef.current = [];
@@ -1237,10 +1746,7 @@ export default function Viewer3D({
     };
     const wallMeshes = buildWallMeshes(edges, wallOpts, scene);
 
-    const wallMat = new PBRMaterial("wallMat", scene);
-    wallMat.albedoColor = new Color3(0.94, 0.93, 0.90);
-    wallMat.metallic = 0.0;
-    wallMat.roughness = 0.88;
+    const wallMat = createWallMaterial(wallStyle, scene);
     wallMeshes.forEach((mesh) => {
       mesh.material = wallMat;
       mesh.castShadow = true;
@@ -1385,7 +1891,6 @@ export default function Viewer3D({
     const onPointerUp = () => {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
-      const mesh = draggedMeshRef.current;
       cameraRef.current?.attachControl(canvasRef.current, true);
       draggedMeshRef.current = null;
       setDraggedModel(null);
@@ -1450,9 +1955,46 @@ export default function Viewer3D({
     wallThicknessMeters,
     sillHeightMeters,
     windowHeightMeters,
-    floorStyle,
     wallMode,
+    // Note: floorStyle and wallStyle are dynamically swapped via applyFloorMaterial/applyWallMaterial
   ]);
+
+  // Drag and drop onto 3D Canvas
+  const handleCanvasDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleCanvasDrop = (e) => {
+    e.preventDefault();
+    const dataStr = e.dataTransfer.getData("application/json");
+    if (!dataStr) return;
+    try {
+      const data = JSON.parse(dataStr);
+      const scene = sceneRef.current;
+      const canvas = canvasRef.current;
+      if (!scene || !canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const hit = scene.pick(x, y);
+
+      if (data.type === "floor") {
+        applyFloorMaterial(data.id);
+      } else if (data.type === "wall") {
+        applyWallMaterial(data.id);
+      } else if (hit.hit && hit.pickedMesh) {
+        if (hit.pickedMesh === floorMeshRef.current) {
+          applyFloorMaterial(data.id);
+        } else {
+          applyWallMaterial(data.id);
+        }
+      }
+    } catch (err) {
+      console.warn("Drag drop parse error", err);
+    }
+  };
 
   useEffect(() => {
     const handleResize = () => {
@@ -1462,14 +2004,27 @@ export default function Viewer3D({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  const btnStyle = (active) => ({
+    background: active ? "#0284c7" : "rgba(255,255,255,0.12)",
+    color: "#fff",
+    border: "none",
+    borderRadius: 4,
+    padding: "4px 8px",
+    cursor: "pointer",
+    fontSize: 11,
+    fontWeight: active ? 600 : 400,
+    boxShadow: active ? "0 2px 6px rgba(2, 132, 199, 0.4)" : "none",
+    transition: "all 0.15s ease",
+  });
+
   return (
     <div
       ref={containerRef}
       style={{
         width: "100%",
-        height: isFullscreen ? "100vh" : 540,
+        height: isFullscreen ? "100vh" : 560,
         display: "flex",
-        background: "#0f172a",
+        background: "#080b12",
         cursor: draggedModel ? "grabbing" : "crosshair",
         position: "relative",
         borderRadius: 8,
@@ -1481,171 +2036,172 @@ export default function Viewer3D({
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          style={{ width: "100%", height: "100%", border: "none", outline: "none" }}
+          onDragOver={handleCanvasDragOver}
+          onDrop={handleCanvasDrop}
+          style={{ width: "100%", height: "100%", border: "none", outline: "none", display: "block" }}
         />
 
-        {/* Viewpoints & Material Preset Bar */}
+        {/* Top Header Bar: Unified Flex Container (Zero Button Overlap!) */}
         <div
           style={{
             position: "absolute",
             top: 10,
             left: 10,
+            right: 10,
             display: "flex",
+            justifyContent: "space-between",
             alignItems: "center",
-            gap: 6,
-            flexWrap: "wrap",
-            background: "rgba(15, 23, 42, 0.75)",
-            backdropFilter: "blur(8px)",
-            padding: "5px 8px",
-            borderRadius: 6,
-            border: "1px solid rgba(255,255,255,0.15)",
-            fontSize: 11,
-            color: "#fff",
-            zIndex: 10,
+            gap: 8,
+            pointerEvents: "none",
+            zIndex: 20,
           }}
         >
-          <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)", marginRight: 2 }}>View:</span>
-          <button
-            onClick={() => setViewpoint("iso")}
+          {/* Left Pill: Camera Modes, Room Focus Presets, Cutaway Toggle */}
+          <div
             style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              flexWrap: "wrap",
+              background: "rgba(15, 23, 42, 0.88)",
+              backdropFilter: "blur(12px)",
+              padding: "5px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
+              pointerEvents: "auto",
             }}
           >
-            🏠 3D Iso
-          </button>
-          <button
-            onClick={() => setViewpoint("top")}
-            style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
-            }}
-          >
-            📐 Top Plan
-          </button>
-          <button
-            onClick={() => setViewpoint("walk")}
-            style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
-            }}
-          >
-            🚶 Walkthrough
-          </button>
-          <button
-            onClick={() => setViewpoint("living")}
-            style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
-            }}
-          >
-            🛋️ Living
-          </button>
-          <button
-            onClick={() => setViewpoint("bed")}
-            style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
-            }}
-          >
-            🛏️ Bed
-          </button>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.5)", marginRight: 1 }}>
+              View:
+            </span>
+            <button onClick={() => setViewpoint("iso")} style={btnStyle(viewpoint === "iso")}>
+              🏠 3D Iso
+            </button>
+            <button onClick={() => setViewpoint("top")} style={btnStyle(viewpoint === "top")}>
+              📐 Top Plan
+            </button>
+            <button onClick={() => setViewpoint("walk")} style={btnStyle(viewpoint === "walk")}>
+              🚶 Walkthrough
+            </button>
 
-          <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.2)", margin: "0 2px" }} />
+            <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.2)", margin: "0 4px" }} />
 
-          <button
-            onClick={() => setWallMode(wallMode === "full" ? "cutaway" : "full")}
-            style={{
-              background: wallMode === "cutaway" ? "#0284c7" : "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 8px",
-              cursor: "pointer",
-              fontWeight: 500,
-            }}
-          >
-            ✂️ {wallMode === "cutaway" ? "Cutaway Walls" : "Full Walls"}
-          </button>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.5)", marginRight: 1 }}>
+              Rooms:
+            </span>
+            <button onClick={() => setViewpoint("living")} style={btnStyle(viewpoint === "living")}>
+              🛋️ Living
+            </button>
+            <button onClick={() => setViewpoint("kitchen")} style={btnStyle(viewpoint === "kitchen")}>
+              🍳 Kitchen
+            </button>
+            <button onClick={() => setViewpoint("master_bed")} style={btnStyle(viewpoint === "master_bed")}>
+              🛏️ Master Bed
+            </button>
+            <button onClick={() => setViewpoint("bed_2")} style={btnStyle(viewpoint === "bed_2")}>
+              🛏️ Bed 2
+            </button>
+            <button onClick={() => setViewpoint("bath")} style={btnStyle(viewpoint === "bath")}>
+              🚿 Bath
+            </button>
+            <button onClick={() => setViewpoint("entry")} style={btnStyle(viewpoint === "entry")}>
+              🚪 Entry
+            </button>
 
-          <select
-            value={floorStyle}
-            onChange={(e) => setFloorStyle(e.target.value)}
-            style={{
-              background: "rgba(255,255,255,0.12)",
-              color: "#fff",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 4,
-              padding: "3px 6px",
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            <option value="wood" style={{ color: "#000" }}>🪵 Oak Parquet</option>
-            <option value="tile" style={{ color: "#000" }}>🏛️ Modern Tile</option>
-            <option value="loft" style={{ color: "#000" }}>⚪ Studio Grey</option>
-          </select>
+            <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.2)", margin: "0 4px" }} />
+
+            <button
+              onClick={() => setWallMode(wallMode === "full" ? "cutaway" : "full")}
+              title="Toggle between Cutaway architectural dollhouse view and full height walls"
+              style={{
+                background: wallMode === "cutaway" ? "#0284c7" : "rgba(255,255,255,0.12)",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                padding: "4px 8px",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 600,
+                boxShadow: wallMode === "cutaway" ? "0 2px 8px rgba(2, 132, 199, 0.4)" : "none",
+              }}
+            >
+              ✂️ {wallMode === "cutaway" ? "Cutaway Walls (1.35m)" : "Full Walls (2.7m)"}
+            </button>
+          </div>
+
+          {/* Right Pill: Fullscreen Button (Completely isolated, no overlap!) */}
+          <div style={{ pointerEvents: "auto", flexShrink: 0 }}>
+            <button
+              onClick={toggleFullscreen}
+              title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              style={{
+                background: "rgba(15, 23, 42, 0.88)",
+                backdropFilter: "blur(12px)",
+                color: "#fff",
+                border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 8,
+                padding: "6px 12px",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              {isFullscreen ? "⤓ Exit Fullscreen" : "⤢ Fullscreen"}
+            </button>
+          </div>
         </div>
 
-        <button
-          onClick={toggleFullscreen}
-          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            background: "rgba(15, 23, 42, 0.75)",
-            color: "#fff",
-            border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 6,
-            padding: "5px 10px",
-            fontSize: 11,
-            cursor: "pointer",
-            zIndex: 10,
-          }}
-        >
-          {isFullscreen ? "⤓ Exit Fullscreen" : "⤢ Fullscreen"}
-        </button>
+        {/* Floating Toast Notification */}
+        {toastMessage && (
+          <div
+            style={{
+              position: "absolute",
+              top: 58,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: "rgba(15, 23, 42, 0.92)",
+              backdropFilter: "blur(8px)",
+              color: "#38bdf8",
+              border: "1px solid rgba(56, 189, 248, 0.4)",
+              borderRadius: 20,
+              padding: "6px 16px",
+              fontSize: 12,
+              fontWeight: 600,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+              zIndex: 30,
+              pointerEvents: "none",
+            }}
+          >
+            {toastMessage}
+          </div>
+        )}
 
+        {/* Bottom Help Bar */}
         <div
           style={{
             position: "absolute",
             bottom: 10,
             left: 10,
-            background: "rgba(15, 23, 42, 0.75)",
-            backdropFilter: "blur(6px)",
+            background: "rgba(15, 23, 42, 0.85)",
+            backdropFilter: "blur(8px)",
             color: "rgba(255,255,255,0.9)",
-            padding: "5px 10px",
+            padding: "5px 12px",
             borderRadius: 6,
             fontSize: 11,
             border: "1px solid rgba(255,255,255,0.15)",
           }}
         >
-          WASD to move · Left-click model to drag · <strong>R</strong> to rotate · <strong>Del</strong> to remove · Scroll to zoom
+          WASD to walk · Left-click model to drag · <strong>R</strong> to rotate · <strong>Del</strong> to remove · Drag materials onto scene
         </div>
       </div>
 
-      <ModelPanel
+      {/* Right Side Panel: Furniture, Materials, and Scene Backups */}
+      <RightSidePanel
         availableModels={availableModels}
         placedModels={placedModels}
         draggedModel={draggedModel}
@@ -1657,6 +2213,11 @@ export default function Viewer3D({
         onAutoFurnish={handleAutoFurnish}
         furnitureCount={furniture ? furniture.filter((f) => f.model_file).length : 0}
         isAutoFurnishing={isAutoFurnishing}
+        floorStyle={floorStyle}
+        wallStyle={wallStyle}
+        onApplyFloorMaterial={applyFloorMaterial}
+        onApplyWallMaterial={applyWallMaterial}
+        stats={stats}
       />
     </div>
   );

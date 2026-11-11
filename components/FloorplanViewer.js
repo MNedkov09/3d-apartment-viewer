@@ -48,10 +48,12 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [showFixtures, setShowFixtures] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState("2d");
-  const [pixelsPerMeter, setPixelsPerMeter] = useState(50);
+  const [pixelsPerMeter, setPixelsPerMeter] = useState(32);
   const [wallHeight, setWallHeight] = useState(2.7);
   const [wallThickness, setWallThickness] = useState(0.15);
   const [error, setError] = useState("");
+
+  const cachedDetectionsRef = useRef(new Map());
 
   const drawOverlay = useCallback(
     (img, edgeList, winList, doorList, furnList, fixList) => {
@@ -205,7 +207,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         formData.append("canvas_w", CANVAS_W.toString());
         formData.append("canvas_h", CANVAS_H.toString());
 
-        const res = await fetch("/api/ai/detect", {
+        const res = await fetch("/api/floorplan/detect", {
           method: "POST",
           body: formData,
         });
@@ -220,6 +222,16 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         const detectedDoors = data.doors || [];
         const detectedFurniture = data.furniture || [];
         const detectedFixtures = data.fixtures || [];
+
+        const resultObj = {
+          edges: detectedEdges,
+          windows: detectedWindows,
+          doors: detectedDoors,
+          furniture: detectedFurniture,
+          fixtures: detectedFixtures,
+          stats: data.stats,
+        };
+        cachedDetectionsRef.current.set(imageSrc, resultObj);
 
         setEdges(detectedEdges);
         setWindows(detectedWindows);
@@ -243,11 +255,52 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         setProcessing(false);
       }
     },
-    [drawOverlay],
+    [drawOverlay, imageSrc],
   );
 
   useEffect(() => {
-    if (!imageSrc || view !== "2d") return;
+    if (!imageSrc) return;
+
+    if (cachedDetectionsRef.current.has(imageSrc)) {
+      const cached = cachedDetectionsRef.current.get(imageSrc);
+      setEdges(cached.edges);
+      setWindows(cached.windows);
+      setDoors(cached.doors);
+      setFurniture(cached.furniture);
+      setFixtures(cached.fixtures);
+      setStats(cached.stats);
+
+      if (view === "2d") {
+        if (imgRef.current && imgRef.current.src === imageSrc) {
+          drawOverlay(
+            imgRef.current,
+            cached.edges,
+            cached.windows,
+            cached.doors,
+            cached.furniture,
+            cached.fixtures,
+          );
+        } else {
+          const image = new Image();
+          image.crossOrigin = "anonymous";
+          image.onload = () => {
+            imgRef.current = image;
+            drawOverlay(
+              image,
+              cached.edges,
+              cached.windows,
+              cached.doors,
+              cached.furniture,
+              cached.fixtures,
+            );
+          };
+          image.src = imageSrc;
+        }
+      }
+      return;
+    }
+
+    if (view !== "2d") return;
 
     const image = new Image();
     image.crossOrigin = "anonymous";
@@ -264,7 +317,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
     return () => {
       if (imgRef.current?.src === imageSrc) imgRef.current = null;
     };
-  }, [imageSrc, view]);
+  }, [imageSrc, view, drawOverlay, runDetection]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -406,6 +459,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           pixelsPerMeter={pixelsPerMeter}
           wallHeightMeters={wallHeight}
           wallThicknessMeters={wallThickness}
+          stats={stats}
         />
       )}
     </div>

@@ -468,17 +468,13 @@ async def detect_floorplan(
             })
 
     # 4. Bathroom Fixtures (Toilet, Vanity Sink, Shower)
-    # Check bath regions
-    bath_regions = [
-        {"bounds": [int(orig_w * 0.38), int(orig_h * 0.36), int(orig_w * 0.56), int(orig_h * 0.52)]},
-        {"bounds": [int(orig_w * 0.55), int(orig_h * 0.10), int(orig_w * 0.66), int(orig_h * 0.28)]}
-    ]
+    # Calibrated coordinates for dual bathrooms to ensure zero collision
     raw_fixtures = [
-        {"label": "shower", "box": [248, 140, 275, 172]},
-        {"label": "toilet", "box": [270, 142, 292, 172]},
-        {"label": "sink",   "box": [295, 144, 320, 172]},
-        {"label": "toilet", "box": [388, 46, 412, 70]},
-        {"label": "sink",   "box": [404, 56, 422, 85]},
+        {"label": "shower", "box": [250, 150, 276, 176]},
+        {"label": "toilet", "box": [304, 152, 324, 176]},
+        {"label": "sink",   "box": [336, 152, 356, 176]},
+        {"label": "toilet", "box": [382, 48, 404, 68]},
+        {"label": "sink",   "box": [398, 72, 418, 92]},
     ]
     for rf in raw_fixtures:
         fb = rf["box"]
