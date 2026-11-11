@@ -2,6 +2,7 @@ import { useEffect, useRef, useMemo, useCallback, useState } from "react";
 import {
   Engine,
   Scene,
+  Texture,
   HemisphericLight,
   DirectionalLight,
   Vector3,
@@ -85,140 +86,244 @@ function computeBounds(edges, pixelsPerMeter) {
   };
 }
 
-export function createFloorMaterial(style = "wood", scene) {
+export function createFloorMaterial(style = "wood", bounds, scene) {
   const mat = new PBRMaterial(`floorMat_${style}_${Date.now()}`, scene);
-  const tex = new DynamicTexture(`floorTex_${style}_${Date.now()}`, { width: 512, height: 512 }, scene, true);
+  const size = 1024;
+  const tex = new DynamicTexture(`floorTex_${style}_${Date.now()}`, { width: size, height: size }, scene, true);
   const ctx = tex.getContext();
 
+  // Crucial: set WRAP_ADDRESSMODE so textures tile across the entire floor without clamping or smearing!
+  tex.wrapU = Texture.WRAP_ADDRESSMODE;
+  tex.wrapV = Texture.WRAP_ADDRESSMODE;
+
+  const w = bounds?.w || 16;
+  const d = bounds?.d || 12;
+
   if (style === "wood") {
-    // Warm Scandinavian Oak Hardwood Parquet
-    ctx.fillStyle = "#d7be98";
-    ctx.fillRect(0, 0, 512, 512);
-    const plankH = 32;
-    for (let y = 0; y < 512; y += plankH) {
-      const plankW = 128;
-      const xOffset = ((y / plankH) % 2) * 64;
-      for (let x = -64; x < 512 + 64; x += plankW) {
-        const tone = 205 + Math.floor(Math.sin(x * 12 + y * 7) * 12);
-        ctx.fillStyle = `rgb(${tone + 18}, ${tone}, ${tone - 26})`;
-        ctx.fillRect(x + xOffset, y, plankW - 2, plankH - 2);
-        ctx.fillStyle = "rgba(105, 75, 35, 0.09)";
-        ctx.fillRect(x + xOffset, y + 6, plankW - 2, 2);
-        ctx.fillRect(x + xOffset, y + 16, plankW - 2, 2);
+    // Warm Scandinavian Natural Oak Hardwood Parquet (repeat every 2.2m)
+    const repeatM = 2.2;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#dfcfb6";
+    ctx.fillRect(0, 0, size, size);
+
+    const plankCount = 16;
+    const plankW = size / plankCount; // 64px = 13.7cm plank width
+    const plankH = 256; // 4 rows
+
+    for (let col = 0; col < plankCount; col++) {
+      const x = col * plankW;
+      const yOffset = (col % 4) * 64;
+
+      for (let y = -plankH; y < size + plankH; y += plankH) {
+        const py = y + yOffset;
+        const toneSeed = Math.sin(col * 31.7 + py * 13.3);
+        const redOffset = Math.floor(toneSeed * 7);
+        const greenOffset = Math.floor(toneSeed * 5);
+        ctx.fillStyle = `rgb(${218 + redOffset}, ${199 + greenOffset}, ${168 + greenOffset})`;
+        ctx.fillRect(x, py, plankW, plankH);
+
+        // Delicate longitudinal oak wood grain
+        for (let g = 8; g < plankW - 8; g += 14) {
+          ctx.fillStyle = "rgba(110, 85, 50, 0.04)";
+          ctx.fillRect(x + g, py, 2, plankH);
+        }
+
+        // Crisp micro-bevel shadow line (right and bottom edge)
+        ctx.fillStyle = "rgba(100, 75, 45, 0.40)";
+        ctx.fillRect(x + plankW - 2, py, 2, plankH);
+        ctx.fillRect(x, py + plankH - 2, plankW, 2);
       }
-      ctx.fillStyle = "#9c815e";
-      ctx.fillRect(0, y + plankH - 2, 512, 2);
     }
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 4;
-    mat.albedoTexture.vScale = 4;
-    mat.roughness = 0.38;
-    mat.metallic = 0.02;
-  } else if (style === "walnut") {
-    // Rich Dark Walnut Parquet
-    ctx.fillStyle = "#4a3525";
-    ctx.fillRect(0, 0, 512, 512);
-    const plankH = 32;
-    for (let y = 0; y < 512; y += plankH) {
-      const plankW = 128;
-      const xOffset = ((y / plankH) % 2) * 64;
-      for (let x = -64; x < 512 + 64; x += plankW) {
-        const tone = 65 + Math.floor(Math.sin(x * 12 + y * 7) * 8);
-        ctx.fillStyle = `rgb(${tone + 16}, ${tone + 4}, ${tone - 10})`;
-        ctx.fillRect(x + xOffset, y, plankW - 2, plankH - 2);
-        ctx.fillStyle = "rgba(20, 10, 5, 0.25)";
-        ctx.fillRect(x + xOffset, y + 8, plankW - 2, 2);
-      }
-      ctx.fillStyle = "#2c1d12";
-      ctx.fillRect(0, y + plankH - 2, 512, 2);
-    }
-    tex.update();
-    mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 4;
-    mat.albedoTexture.vScale = 4;
     mat.roughness = 0.32;
-    mat.metallic = 0.04;
-  } else if (style === "marble") {
-    // Carrara White Italian Polished Marble
-    ctx.fillStyle = "#f4f5f7";
-    ctx.fillRect(0, 0, 512, 512);
-    ctx.strokeStyle = "rgba(180, 185, 195, 0.35)";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(30, 0); ctx.bezierCurveTo(120, 180, 200, 240, 310, 512);
-    ctx.moveTo(250, 0); ctx.bezierCurveTo(340, 140, 420, 300, 490, 512);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(160, 165, 175, 0.2)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(0, 150); ctx.bezierCurveTo(160, 200, 320, 120, 512, 240);
-    ctx.stroke();
-    // Grout tile grid
-    ctx.strokeStyle = "rgba(200, 205, 215, 0.4)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, 255, 255);
-    ctx.strokeRect(257, 1, 254, 255);
-    ctx.strokeRect(1, 257, 255, 254);
-    ctx.strokeRect(257, 257, 254, 254);
+    mat.metallic = 0.01;
+  } else if (style === "walnut") {
+    // Rich Dark American Walnut Hardwood (repeat every 2.2m)
+    const repeatM = 2.2;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#3c2a1e";
+    ctx.fillRect(0, 0, size, size);
+
+    const plankCount = 16;
+    const plankW = size / plankCount;
+    const plankH = 256;
+
+    for (let col = 0; col < plankCount; col++) {
+      const x = col * plankW;
+      const yOffset = (col % 4) * 64;
+
+      for (let y = -plankH; y < size + plankH; y += plankH) {
+        const py = y + yOffset;
+        const toneSeed = Math.sin(col * 27.3 + py * 17.1);
+        const r = 62 + Math.floor(toneSeed * 8);
+        const g = 44 + Math.floor(toneSeed * 6);
+        const b = 32 + Math.floor(toneSeed * 5);
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(x, py, plankW, plankH);
+
+        // Rich satin grain lines
+        for (let g = 8; g < plankW - 8; g += 14) {
+          ctx.fillStyle = "rgba(20, 10, 5, 0.12)";
+          ctx.fillRect(x + g, py, 2, plankH);
+        }
+
+        // Dark micro-bevel grooves
+        ctx.fillStyle = "rgba(20, 10, 5, 0.65)";
+        ctx.fillRect(x + plankW - 2, py, 2, plankH);
+        ctx.fillRect(x, py + plankH - 2, plankW, 2);
+      }
+    }
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 3;
-    mat.albedoTexture.vScale = 3;
-    mat.roughness = 0.18;
-    mat.metallic = 0.08;
+    mat.roughness = 0.28;
+    mat.metallic = 0.02;
+  } else if (style === "marble") {
+    // Carrara White Italian Polished Marble (60x60cm Tiles, repeat every 2.4m)
+    const repeatM = 2.4;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillRect(0, 0, size, size);
+
+    // Realistic feathered marble veining
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.26)";
+    ctx.beginPath();
+    ctx.moveTo(80, 0);
+    ctx.bezierCurveTo(240, 320, 400, 480, 680, 1024);
+    ctx.moveTo(520, 0);
+    ctx.bezierCurveTo(680, 240, 840, 600, 980, 1024);
+    ctx.stroke();
+
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(203, 213, 225, 0.32)";
+    ctx.beginPath();
+    ctx.moveTo(0, 300);
+    ctx.bezierCurveTo(320, 420, 640, 260, 1024, 500);
+    ctx.moveTo(0, 720);
+    ctx.bezierCurveTo(340, 800, 700, 680, 1024, 880);
+    ctx.stroke();
+
+    // Crisp 60x60cm modern tile grout grid (4x4 tiles of 256x256px)
+    const tileSize = 256;
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 2;
+    for (let x = 0; x <= size; x += tileSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, size);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= size; y += tileSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(size, y);
+      ctx.stroke();
+    }
+
+    tex.update();
+    mat.albedoTexture = tex;
+    mat.roughness = 0.12;
+    mat.metallic = 0.05;
   } else if (style === "tile") {
-    // Modern Architectural Grey Tile
-    ctx.fillStyle = "#c5c9ce";
-    ctx.fillRect(0, 0, 512, 512);
-    const tileSize = 128;
-    for (let y = 0; y < 512; y += tileSize) {
-      for (let x = 0; x < 512; x += tileSize) {
-        const tone = 225 + Math.floor(Math.cos(x + y) * 6);
-        ctx.fillStyle = `rgb(${tone}, ${tone}, ${tone})`;
+    // Contemporary Architectural Grey Porcelain Tile (60x60cm, repeat every 2.4m)
+    const repeatM = 2.4;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#cbd1d8";
+    ctx.fillRect(0, 0, size, size);
+
+    const tileSize = 256;
+    for (let y = 0; y < size; y += tileSize) {
+      for (let x = 0; x < size; x += tileSize) {
+        const tone = 202 + Math.floor(Math.sin(x * 11 + y * 7) * 4);
+        ctx.fillStyle = `rgb(${tone}, ${tone + 2}, ${tone + 5})`;
         ctx.fillRect(x + 2, y + 2, tileSize - 4, tileSize - 4);
       }
     }
+
+    // Clean modern dark architectural grout
+    ctx.strokeStyle = "#64748b";
+    ctx.lineWidth = 3;
+    for (let x = 0; x <= size; x += tileSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, size);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= size; y += tileSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(size, y);
+      ctx.stroke();
+    }
+
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 4;
-    mat.albedoTexture.vScale = 4;
-    mat.roughness = 0.28;
-    mat.metallic = 0.06;
+    mat.roughness = 0.24;
+    mat.metallic = 0.03;
   } else if (style === "terracotta") {
-    // Tuscan Terracotta Warm Clay
-    ctx.fillStyle = "#b86146";
-    ctx.fillRect(0, 0, 512, 512);
-    const tileSize = 128;
-    for (let y = 0; y < 512; y += tileSize) {
-      for (let x = 0; x < 512; x += tileSize) {
-        const tone = 180 + Math.floor(Math.sin(x * 7 + y) * 12);
-        ctx.fillStyle = `rgb(${tone + 10}, ${Math.floor(tone * 0.52)}, ${Math.floor(tone * 0.38)})`;
-        ctx.fillRect(x + 3, y + 3, tileSize - 6, tileSize - 6);
+    // Warm Tuscan Mediterranean Terracotta Pavers (repeat every 1.8m)
+    const repeatM = 1.8;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#e2ded8"; // Mortar base
+    ctx.fillRect(0, 0, size, size);
+
+    const paverW = 256;
+    const paverH = 128;
+    for (let row = 0; row < size / paverH; row++) {
+      const y = row * paverH;
+      const xOffset = (row % 2) * (paverW / 2);
+      for (let x = -paverW; x < size + paverW; x += paverW) {
+        const px = x + xOffset;
+        const seed = Math.sin(px * 13 + y * 23);
+        const r = 188 + Math.floor(seed * 14);
+        const g = 92 + Math.floor(seed * 10);
+        const b = 66 + Math.floor(seed * 8);
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(px + 4, y + 4, paverW - 8, paverH - 8);
       }
     }
+
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 4;
-    mat.albedoTexture.vScale = 4;
-    mat.roughness = 0.45;
-    mat.metallic = 0.02;
+    mat.roughness = 0.48;
+    mat.metallic = 0.01;
   } else {
-    // Minimalist Contemporary Slate Concrete
-    ctx.fillStyle = "#9ca3af";
-    ctx.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 400; i++) {
-      const rx = Math.random() * 512;
-      const ry = Math.random() * 512;
-      const tone = 140 + Math.floor(Math.random() * 30);
-      ctx.fillStyle = `rgba(${tone}, ${tone}, ${tone}, 0.15)`;
-      ctx.fillRect(rx, ry, 3, 3);
+    // Modern Monolithic Polished Industrial Concrete (repeat every 3.0m)
+    const repeatM = 3.0;
+    tex.uScale = Math.max(1, w / repeatM);
+    tex.vScale = Math.max(1, d / repeatM);
+
+    ctx.fillStyle = "#a1a6af";
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle clouding
+    for (let i = 0; i < 24; i++) {
+      const rx = Math.random() * size;
+      const ry = Math.random() * size;
+      const rad = 80 + Math.random() * 120;
+      const grad = ctx.createRadialGradient(rx, ry, 10, rx, ry, rad);
+      grad.addColorStop(0, "rgba(255, 255, 255, 0.05)");
+      grad.addColorStop(1, "rgba(0, 0, 0, 0.04)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(rx, ry, rad, 0, Math.PI * 2);
+      ctx.fill();
     }
+
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 4;
-    mat.albedoTexture.vScale = 4;
-    mat.roughness = 0.55;
+    mat.roughness = 0.38;
     mat.metallic = 0.02;
   }
   return mat;
@@ -228,46 +333,59 @@ export function createWallMaterial(style = "white", scene) {
   const mat = new PBRMaterial(`wallMat_${style}_${Date.now()}`, scene);
 
   if (style === "brick") {
-    const tex = new DynamicTexture(`brickTex_${Date.now()}`, { width: 512, height: 512 }, scene, true);
+    const size = 1024;
+    const tex = new DynamicTexture(`brickTex_${Date.now()}`, { width: size, height: size }, scene, true);
     const ctx = tex.getContext();
-    ctx.fillStyle = "#c8c4be";
-    ctx.fillRect(0, 0, 512, 512);
-    const rowH = 32;
-    for (let y = 0; y < 512; y += rowH) {
-      const brickW = 80;
-      const xOffset = ((y / rowH) % 2) * 40;
-      for (let x = -40; x < 512 + 40; x += brickW) {
-        const tone = 150 + Math.floor(Math.sin(x * 17 + y) * 20);
-        ctx.fillStyle = `rgb(${tone + 30}, ${Math.floor(tone * 0.55)}, ${Math.floor(tone * 0.45)})`;
-        ctx.fillRect(x + xOffset + 2, y + 2, brickW - 4, rowH - 4);
+
+    tex.wrapU = Texture.WRAP_ADDRESSMODE;
+    tex.wrapV = Texture.WRAP_ADDRESSMODE;
+    tex.uScale = 4;
+    tex.vScale = 3;
+
+    // Mortar base
+    ctx.fillStyle = "#d4cfc5";
+    ctx.fillRect(0, 0, size, size);
+
+    const rowH = 64;
+    const brickW = 160;
+
+    for (let row = 0; row < size / rowH; row++) {
+      const y = row * rowH;
+      const xOffset = (row % 2) * (brickW / 2);
+      for (let x = -brickW; x < size + brickW; x += brickW) {
+        const px = x + xOffset;
+        const seed = Math.sin(px * 17.3 + y * 31.7);
+        const r = 175 + Math.floor(seed * 22);
+        const g = 82 + Math.floor(seed * 14);
+        const b = 60 + Math.floor(seed * 12);
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(px + 4, y + 4, brickW - 8, rowH - 8);
       }
     }
     tex.update();
     mat.albedoTexture = tex;
-    mat.albedoTexture.uScale = 3;
-    mat.albedoTexture.vScale = 2;
     mat.roughness = 0.85;
     mat.metallic = 0.0;
   } else if (style === "greige") {
-    mat.albedoColor = new Color3(0.88, 0.86, 0.82);
-    mat.roughness = 0.88;
+    mat.albedoColor = new Color3(0.88, 0.85, 0.81);
+    mat.roughness = 0.90;
     mat.metallic = 0.0;
   } else if (style === "sage") {
-    mat.albedoColor = new Color3(0.58, 0.65, 0.59);
-    mat.roughness = 0.85;
+    mat.albedoColor = new Color3(0.52, 0.60, 0.53);
+    mat.roughness = 0.88;
     mat.metallic = 0.0;
   } else if (style === "navy") {
-    mat.albedoColor = new Color3(0.14, 0.20, 0.26);
+    mat.albedoColor = new Color3(0.12, 0.17, 0.24);
     mat.roughness = 0.82;
     mat.metallic = 0.02;
   } else if (style === "charcoal") {
-    mat.albedoColor = new Color3(0.18, 0.21, 0.25);
-    mat.roughness = 0.85;
+    mat.albedoColor = new Color3(0.18, 0.20, 0.23);
+    mat.roughness = 0.88;
     mat.metallic = 0.0;
   } else {
-    // Pure Architectural White
-    mat.albedoColor = new Color3(0.96, 0.96, 0.95);
-    mat.roughness = 0.88;
+    // Pure Architectural Crisp White
+    mat.albedoColor = new Color3(0.97, 0.97, 0.96);
+    mat.roughness = 0.90;
     mat.metallic = 0.0;
   }
   return mat;
@@ -1421,12 +1539,12 @@ export default function Viewer3D({
   const applyFloorMaterial = useCallback((styleKey) => {
     const scene = sceneRef.current;
     if (!scene || !floorMeshRef.current) return;
-    const newMat = createFloorMaterial(styleKey, scene);
+    const newMat = createFloorMaterial(styleKey, bounds, scene);
     floorMeshRef.current.material = newMat;
     setFloorStyle(styleKey);
     const mObj = FLOOR_MATERIALS.find((m) => m.id === styleKey);
     showToast(`✨ Applied ${mObj?.name || styleKey} to Floor`);
-  }, [showToast]);
+  }, [bounds, showToast]);
 
   const applyWallMaterial = useCallback((styleKey) => {
     const scene = sceneRef.current;
@@ -1689,7 +1807,7 @@ export default function Viewer3D({
     };
   }, [removePlacedModel]);
 
-  // Main 3D Babylon.js Scene Initialization (Always full walls at 2.7m ceiling height)
+  // Main 3D Babylon.js Scene Initialization (Always full walls at 2.7m ceiling height with balanced lighting)
   useEffect(() => {
     if (!canvasRef.current) return;
 
@@ -1728,39 +1846,39 @@ export default function Viewer3D({
 
     const wasdSpeed = 8;
 
-    // 1. Natural Sky Hemisphere Light
+    // 1. Natural Sky Hemisphere Light (Warm ambient bounce into all rooms)
     const hemiLight = new HemisphericLight(
       "hemiLight",
       new Vector3(0, 1, 0),
       scene,
     );
-    hemiLight.intensity = 0.72;
-    hemiLight.diffuse = new Color3(1.0, 0.98, 0.95);
-    hemiLight.groundColor = new Color3(0.40, 0.38, 0.35);
+    hemiLight.intensity = 0.95;
+    hemiLight.diffuse = new Color3(1.0, 0.99, 0.98);
+    hemiLight.groundColor = new Color3(0.68, 0.65, 0.62);
 
-    // 2. Warm Sun Directional Light with soft shadows
+    // 2. Warm Sun Directional Light with soft ambient occlusion shadows
     const sunDir = new Vector3(-0.6, -1.2, -0.7).normalize();
     const dirLight = new DirectionalLight("dirLight", sunDir, scene);
-    dirLight.position = new Vector3(bounds.cx + 12, 18, bounds.cz + 12);
-    dirLight.intensity = 1.25;
-    dirLight.diffuse = new Color3(1.0, 0.97, 0.90);
+    dirLight.position = new Vector3(bounds.cx + 12, 22, bounds.cz + 12);
+    dirLight.intensity = 0.95;
+    dirLight.diffuse = new Color3(1.0, 0.98, 0.92);
 
     const shadowGen = new ShadowGenerator(2048, dirLight);
     shadowGen.useBlurExponentialShadowMap = true;
-    shadowGen.blurKernel = 28;
-    shadowGen.darkness = 0.45;
+    shadowGen.blurKernel = 32;
+    shadowGen.darkness = 0.28; // Soft realistic shadows, not harsh pitch black!
     shadowGen.bias = 0.002;
 
-    // 3. Interior Fill Light
+    // 3. Interior Fill Light (Brightens room interiors under 2.7m full walls)
     const fillLight = new DirectionalLight(
       "fillLight",
-      new Vector3(0.6, -0.8, 0.7).normalize(),
+      new Vector3(0.6, -0.9, 0.7).normalize(),
       scene,
     );
-    fillLight.intensity = 0.35;
-    fillLight.diffuse = new Color3(0.88, 0.92, 1.0);
+    fillLight.intensity = 0.40;
+    fillLight.diffuse = new Color3(0.92, 0.95, 1.0);
 
-    // 4. Floor with Procedural Material
+    // 4. Floor with Seamless High-Resolution Procedural Material
     const halfThick = wallThicknessMeters / 2;
     const floor = MeshBuilder.CreateGround(
       "floor",
@@ -1778,7 +1896,7 @@ export default function Viewer3D({
     floor.position = new Vector3(bounds.cx, floorY, bounds.cz);
     floorYRef.current = floorY;
 
-    const floorMat = createFloorMaterial(floorStyle, scene);
+    const floorMat = createFloorMaterial(floorStyle, bounds, scene);
     floor.material = floorMat;
     floorMeshRef.current = floor;
 
