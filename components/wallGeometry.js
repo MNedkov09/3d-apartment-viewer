@@ -162,8 +162,12 @@ export function buildWallMeshes(edges, opts, scene) {
     }
   }
 
-  const snapZ = buildAxisSnapper(rawH.map((s) => s.z), 0.14);
-  const snapX = buildAxisSnapper(rawV.map((s) => s.x), 0.14);
+  const axisTol = Math.max(0.14, 5.5 * scale);
+  const bridgeGap = Math.max(0.22, 8.5 * scale);
+  const cornerTol = Math.max(0.32, 14.0 * scale);
+
+  const snapZ = buildAxisSnapper(rawH.map((s) => s.z), axisTol);
+  const snapX = buildAxisSnapper(rawV.map((s) => s.x), axisTol);
 
   // Group horizontal segments by snapped Z and merge overlapping/touching intervals
   const hGroups = new Map();
@@ -178,8 +182,8 @@ export function buildWallMeshes(edges, opts, scene) {
     list.sort((a, b) => a.minX - b.minX);
     let cur = { z, minX: list[0].minX, maxX: list[0].maxX };
     for (let i = 1; i < list.length; i++) {
-      // Bridge small T-junction skeleton gaps (<= 0.22m), but preserve doorway gaps (> 0.5m)
-      if (list[i].minX <= cur.maxX + 0.22) {
+      // Bridge small T-junction skeleton gaps, but preserve doorway gaps
+      if (list[i].minX <= cur.maxX + bridgeGap) {
         cur.maxX = Math.max(cur.maxX, list[i].maxX);
       } else {
         mergedH.push(cur);
@@ -202,7 +206,7 @@ export function buildWallMeshes(edges, opts, scene) {
     list.sort((a, b) => a.minZ - b.minZ);
     let cur = { x, minZ: list[0].minZ, maxZ: list[0].maxZ };
     for (let i = 1; i < list.length; i++) {
-      if (list[i].minZ <= cur.maxZ + 0.22) {
+      if (list[i].minZ <= cur.maxZ + bridgeGap) {
         cur.maxZ = Math.max(cur.maxZ, list[i].maxZ);
       } else {
         mergedV.push(cur);
@@ -212,21 +216,18 @@ export function buildWallMeshes(edges, opts, scene) {
     mergedV.push(cur);
   }
 
-  // Snap endpoints where H and V walls meet at corners or T-junctions
-  const snapTol = 0.24;
-  for (const h of mergedH) {
-    for (const v of mergedV) {
-      if (h.z >= v.minZ - snapTol && h.z <= v.maxZ + snapTol) {
-        if (Math.abs(h.minX - v.x) <= snapTol) h.minX = v.x;
-        if (Math.abs(h.maxX - v.x) <= snapTol) h.maxX = v.x;
-      }
-    }
-  }
-  for (const v of mergedV) {
+  // Simultaneously snap endpoints where H and V walls meet at L-corners or T-junctions
+  for (let pass = 0; pass < 2; pass++) {
     for (const h of mergedH) {
-      if (v.x >= h.minX - snapTol && v.x <= h.maxX + snapTol) {
-        if (Math.abs(v.minZ - h.z) <= snapTol) v.minZ = h.z;
-        if (Math.abs(v.maxZ - h.z) <= snapTol) v.maxZ = h.z;
+      for (const v of mergedV) {
+        const nearX = v.x >= h.minX - cornerTol && v.x <= h.maxX + cornerTol;
+        const nearZ = h.z >= v.minZ - cornerTol && h.z <= v.maxZ + cornerTol;
+        if (nearX && nearZ) {
+          if (Math.abs(h.minX - v.x) <= cornerTol) h.minX = v.x;
+          if (Math.abs(h.maxX - v.x) <= cornerTol) h.maxX = v.x;
+          if (Math.abs(v.minZ - h.z) <= cornerTol) v.minZ = h.z;
+          if (Math.abs(v.maxZ - h.z) <= cornerTol) v.maxZ = h.z;
+        }
       }
     }
   }
