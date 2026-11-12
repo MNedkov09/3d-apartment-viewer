@@ -67,6 +67,70 @@ def get_models():
         print("Architectural element detector ready!")
     return m2f_processor, m2f_model, cubi_yolo
 
+def _nearest_wall_dir(box, wall_mask, orig_w, orig_h):
+    """Returns 'N', 'S', 'W', or 'E' indicating which wall edge is closest to box."""
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+    pad = max(14, int(min(orig_w, orig_h) * 0.035))
+    scores = {
+        "N": float((wall_mask[max(0, y1 - pad):max(0, y1), max(0, x1):min(orig_w, x2)] > 0).mean()) if y1 > 0 else 0.0,
+        "S": float((wall_mask[min(orig_h, y2):min(orig_h, y2 + pad), max(0, x1):min(orig_w, x2)] > 0).mean()) if y2 < orig_h else 0.0,
+        "W": float((wall_mask[max(0, y1):min(orig_h, y2), max(0, x1 - pad):max(0, x1)] > 0).mean()) if x1 > 0 else 0.0,
+        "E": float((wall_mask[max(0, y1):min(orig_h, y2), min(orig_w, x2):min(orig_w, x2 + pad)] > 0).mean()) if x2 < orig_w else 0.0,
+    }
+    return max(scores.items(), key=lambda kv: kv[1])[0]
+
+
+def _wall_facing_yaw(model_file, box_coords, wall_dir):
+    """Computes Babylon Y-rotation so furniture backs the nearest wall and faces into the room."""
+    bx1, by1, bx2, by2 = box_coords
+    is_horiz = (bx2 - bx1) >= (by2 - by1)
+
+    if model_file == "Bed1.glb":
+        # Bed1 headboard sits at local -X
+        return {"N": -math.pi / 2.0, "S": math.pi / 2.0, "W": 0.0, "E": math.pi}.get(
+            wall_dir, 0.0 if is_horiz else -math.pi / 2.0
+        )
+    if model_file == "Sofa1.glb":
+        # Sofa1 backrest sits at local -X, seats face +X
+        if is_horiz:
+            return (math.pi / 2.0) if wall_dir == "S" else (-math.pi / 2.0)
+        return math.pi if wall_dir == "E" else 0.0
+    if model_file in ("Toilet1.glb", "Sink1.glb", "Shower1.glb"):
+        # Bathroom GLBs face +Z at yaw=0
+        return {"N": 0.0, "S": math.pi, "W": math.pi / 2.0, "E": -math.pi / 2.0}.get(wall_dir, 0.0)
+    if model_file in ("Desk1.glb", "TableB1.glb", "TableS2.glb", "Storage1.glb", "Storage2.glb", "Storage3.glb", "Storage4.glb"):
+        # Long axis aligns along Z at yaw=0 and X at yaw=pi/2
+        return (math.pi / 2.0) if is_horiz else 0.0
+    return 0.0
+
+
+def _boxes_overlap_ratio(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0:
+        return 0.0
+    area_a = max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+    area_b = max(1.0, (b[2] - b[0]) * (b[3] - b[1]))
+    return inter / min(area_a, area_b)
+
+
+def _map_yolo_furniture_label(raw_name):
+    """Maps CubiCasa fixed-furniture class names into catalog furniture labels."""
+    n = raw_name.lower()
+    if "toilet" in n:
+        return "toilet"
+    if "sink" in n or "basin" in n:
+        return "sink"
+    if "shower" in n or "bathtub" in n or "tub" in n or "jacuzzi" in n:
+        return "shower"
+    if "closet" in n or "cabinet" in n:
+        return "wardrobe"
+    if "counter" in n or "table" in n:
+        return "table"
+    return None
+
+
 @app.on_event("startup")
 def startup_event():
     get_models()
@@ -131,16 +195,24 @@ async def detect_floorplan(
         sc = float(info["score"])
         m = (seg_map == sid).astype(np.uint8)
         area = int(m.sum())
-        if area < 25:
+        if area < 40:
             continue
-        # Reject low-confidence thin lines that border colored interior furniture
-        if sc < 0.82:
-            dil = cv2.dilate(m, np.ones((15, 15), np.uint8))
-            colored_ratio = float((hsv[:, :, 1][dil > 0] > 12).mean())
-            if colored_ratio >= 0.03:
-                continue
-        wall_mask[m > 0] = 255
         ys, xs = np.where(m > 0)
+        bw_m = int(xs.max() - xs.min() + 1)
+        bh_m = int(ys.max() - ys.min() + 1)
+        # Reject only low-confidence ultra-thin decorative/furniture strokes near colored areas
+        if sc < 0.78 and min(bw_m, bh_m) <= 4:
+            dil = cv2.dilate(m, np.ones((11, 11), np.uint8))
+            colored_ratio = float((hsv[:, :, 1][dil > 0] > 18).mean())
+            if colored_ratio >= 0.08:
+                continue
+        # Reject green leafy landscaping blobs misclassified as wall segments
+        b_m = float(img[:, :, 0][m > 0].mean())
+        g_m = float(img[:, :, 1][m > 0].mean())
+        r_m = float(img[:, :, 2][m > 0].mean())
+        if g_m > max(r_m, b_m) + 10 and area > 200:
+            continue
+        wall_mask[m > 0] = 255
         wall_polygons.append({
             "id": f"wall_{idx}",
             "label": "wall",
@@ -149,16 +221,12 @@ async def detect_floorplan(
             "box": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
         })
 
-    # Clean tiny disconnected components from wall_mask
+    # Clean tiny disconnected fragments from wall_mask
     num_l, labels, stats, _ = cv2.connectedComponentsWithStats(wall_mask, 8)
     clean_wall_mask = np.zeros_like(wall_mask)
     for l_idx in range(1, num_l):
         if stats[l_idx, cv2.CC_STAT_AREA] >= 55:
             clean_wall_mask[labels == l_idx] = 255
-
-    # Clear false wall mask over entrance foyer closets / "ENTRY" text so entrance opens into living room
-    clean_wall_mask[int(orig_h * 0.74):int(orig_h * 0.862), int(orig_w * 0.43):int(orig_w * 0.553)] = 0
-    clean_wall_mask[int(orig_h * 0.74):int(orig_h * 0.792), int(orig_w * 0.55):int(orig_w * 0.65)] = 0
 
     raw_wall_edges, _ = extract_walls_from_mask(clean_wall_mask, min_edge_len=8.0)
 
@@ -172,23 +240,31 @@ async def detect_floorplan(
             is_h = abs(x2 - x1) >= abs(y2 - y1)
             wall_segments.append((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2), is_h))
 
-    # 2. Windows & Doors Detection
+    # 2. Windows, Doors & Architectural Metadata Detection
     y_res = det_yolo.predict(img, conf=max(0.08, min(conf, 0.25)), imgsz=640, verbose=False)[0]
     raw_windows = []
     raw_doors = []
     panel_areas = []
+    space_boxes = []
+    yolo_furniture_boxes = []
 
     for box in y_res.boxes:
         cid = int(box.cls[0])
         name = det_yolo.names[cid]
         bconf = float(box.conf[0])
         b = [float(v) for v in box.xyxy[0].tolist()]
-        if name in ['glass', 'window', 'window regular', 'sliding window'] and bconf >= 0.10:
+        if name in ['glass', 'window', 'window regular', 'window full', 'window sauna', 'sliding window'] and bconf >= 0.10:
             raw_windows.append((bconf, b, name))
-        elif name in ['door', 'door swing beside', 'sliding door'] and bconf >= 0.45:
+        elif name.startswith('door') and bconf >= 0.32:
             raw_doors.append((bconf, b, name))
         elif name == 'panelarea' and bconf >= 0.08:
             panel_areas.append((bconf, b))
+        elif name.startswith('space ') and bconf >= 0.08:
+            space_boxes.append((name, bconf, b))
+        elif bconf >= 0.14:
+            mapped_lbl = _map_yolo_furniture_label(name)
+            if mapped_lbl is not None:
+                yolo_furniture_boxes.append((mapped_lbl, bconf, b))
 
     # Snap windows onto the nearest colinear wall axis while preserving full window length
     snapped_windows = []
@@ -198,20 +274,20 @@ async def detect_floorplan(
         cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
         is_h = bw >= bh
         best_coord = None
-        best_dist = 15.0
+        best_dist = 18.0
         for sx1, sy1, sx2, sy2, seg_h in wall_segments:
             if seg_h != is_h:
                 continue
             if is_h:
                 ov = min(bx2, sx2) - max(bx1, sx1)
                 dist = abs(cy - sy1)
-                if ov > 3 and dist < best_dist:
+                if ov > 2 and dist < best_dist:
                     best_dist = dist
                     best_coord = sy1
             else:
                 ov = min(by2, sy2) - max(by1, sy1)
                 dist = abs(cx - sx1)
-                if ov > 3 and dist < best_dist:
+                if ov > 2 and dist < best_dist:
                     best_dist = dist
                     best_coord = sx1
         if best_coord is not None:
@@ -269,10 +345,13 @@ async def detect_floorplan(
             "width": max(thick * scale, 8.0)
         })
 
-    # Snap doors to doorway opening along wall axis
+    # Snap doors onto doorway panel area or adjacent colinear wall segments (even across gaps)
     doors = []
     viewer3d_doors = []
-    for idx, (bconf, b, name) in enumerate(raw_doors):
+    accepted_door_boxes = []
+    for idx, (bconf, b, name) in enumerate(sorted(raw_doors, key=lambda d: -d[0])):
+        if any(_boxes_overlap_ratio(b, prev_b) > 0.55 for prev_b in accepted_door_boxes):
+            continue
         bx1, by1, bx2, by2 = b
         best_panel = None
         for pconf, pb in panel_areas:
@@ -301,22 +380,27 @@ async def detect_floorplan(
                         break
                 door_seg = ([px, py1], [px, py2], max(pw, 6.0))
         else:
-            best_d = 12.0
+            best_score = 1e9
             for sx1, sy1, sx2, sy2, seg_h in wall_segments:
                 if seg_h:
-                    if min(bx2, sx2) - max(bx1, sx1) >= 8:
-                        d = min(abs(sy1 - by1), abs(sy1 - by2), 0 if by1 <= sy1 <= by2 else 999)
-                        if d < best_d:
-                            best_d = d
+                    gap_x = max(0.0, max(bx1 - sx2, sx1 - bx2))
+                    if gap_x <= 32.0:
+                        d = min(abs(sy1 - by1), abs(sy1 - by2), abs(sy1 - (by1 + by2) / 2.0))
+                        score = d + gap_x * 0.35
+                        if d <= 16.0 and score < best_score:
+                            best_score = score
                             door_seg = ([bx1, sy1], [bx2, sy1], 8.0)
                 else:
-                    if min(by2, sy2) - max(by1, sy1) >= 8:
-                        d = min(abs(sx1 - bx1), abs(sx1 - bx2), 0 if bx1 <= sx1 <= bx2 else 999)
-                        if d < best_d:
-                            best_d = d
+                    gap_y = max(0.0, max(by1 - sy2, sy1 - by2))
+                    if gap_y <= 32.0:
+                        d = min(abs(sx1 - bx1), abs(sx1 - bx2), abs(sx1 - (bx1 + bx2) / 2.0))
+                        score = d + gap_y * 0.35
+                        if d <= 16.0 and score < best_score:
+                            best_score = score
                             door_seg = ([sx1, by1], [sx1, by2], 8.0)
 
         if door_seg is not None:
+            accepted_door_boxes.append(b)
             st, en, th = door_seg
             c_st = to_canvas_pt(st)
             c_en = to_canvas_pt(en)
@@ -340,47 +424,15 @@ async def detect_floorplan(
                 "label": "door"
             })
 
-    # 3. Furniture & Fixtures Detection
+    # 3. General Interior Room & Furniture/Fixture Detection
     furniture = []
     fixtures = []
-    wall_dil = cv2.dilate(clean_wall_mask, np.ones((7, 7), np.uint8))
-    colored = ((hsv[:, :, 1] >= 8) & (hsv[:, :, 2] > 100) & (wall_dil == 0)).astype(np.uint8) * 255
-    colored = cv2.morphologyEx(colored, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    num_f, flabels, fstats, _ = cv2.connectedComponentsWithStats(colored, 8)
-
-    occupied_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-
-    def resolve_model_angle(label, model_file, box_coords):
-        bx1, by1, bx2, by2 = box_coords
-        bw = abs(bx2 - bx1)
-        bh = abs(by2 - by1)
-        cx = (bx1 + bx2) / 2.0
-        cy = (by1 + by2) / 2.0
-        is_horiz = bw >= bh
-
-        if model_file == "Bed1.glb":
-            # Bed1 has length along X and headboard at -X
-            if cy < orig_h * 0.45:
-                return -math.pi / 2.0  # Headboard against top (-Z) wall, facing +Z
-            return 0.0 if is_horiz else -math.pi / 2.0
-        if model_file == "Sofa1.glb":
-            # Sofa1 has length along Z and front seats at +X
-            if is_horiz:
-                return (math.pi / 2.0) if cy >= orig_h * 0.50 else (-math.pi / 2.0)
-            return 0.0 if cx < orig_w * 0.50 else math.pi
-        if model_file == "Desk1.glb":
-            # Desk1 has length along Z; keep vertical if positioned along a side wall in top room
-            if not is_horiz or (abs(bw - bh) <= 10 and cy < orig_h * 0.35 and cx > orig_w * 0.40):
-                return 0.0
-            return math.pi / 2.0
-        if model_file in ("TableB1.glb", "TableS2.glb", "Storage1.glb", "Storage2.glb", "Storage3.glb", "Storage4.glb"):
-            # All TableB1/S2 and Storage1-4 models have long axis along Z
-            return (math.pi / 2.0) if is_horiz else 0.0
-        return 0.0
+    occupied_boxes = []
 
     def append_furniture(label, box_coords, model_file, confidence=0.90, angle_rad=None):
         oriented = extract_oriented_box(box_coords)
-        ang = angle_rad if angle_rad is not None else resolve_model_angle(label, model_file, box_coords)
+        wall_dir = _nearest_wall_dir(box_coords, clean_wall_mask, orig_w, orig_h)
+        ang = angle_rad if angle_rad is not None else _wall_facing_yaw(model_file, box_coords, wall_dir)
         furniture.append({
             "id": f"furniture_{len(furniture)}",
             "label": label,
@@ -401,132 +453,285 @@ async def detect_floorplan(
             ],
             "model_file": model_file,
         })
+        occupied_boxes.append([float(v) for v in box_coords])
+
+    # Build enclosed building interior mask by bridging doorways onto walls
+    k_bridge = max(25, int(min(orig_w, orig_h) * 0.06) | 1)
+    bridge_mask = clean_wall_mask.copy()
+    for _, b, _ in raw_doors:
+        cv2.rectangle(bridge_mask, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), 255, -1)
+    closed_walls = cv2.morphologyEx(bridge_mask, cv2.MORPH_CLOSE, np.ones((k_bridge, k_bridge), np.uint8))
+    pad_inv = cv2.copyMakeBorder((closed_walls == 0).astype(np.uint8) * 255, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=255)
+    ff_mask = np.zeros((orig_h + 4, orig_w + 4), dtype=np.uint8)
+    cv2.floodFill(pad_inv, ff_mask, (0, 0), 128)
+    interior_mask = (pad_inv[1:-1, 1:-1] == 255) & (clean_wall_mask == 0)
+
+    # Fallback if walls do not form any closed perimeter (rare partial crop)
+    if int(interior_mask.sum()) < int(orig_w * orig_h * 0.04) and wall_polygons:
+        wx1 = min(w["box"][0] for w in wall_polygons)
+        wy1 = min(w["box"][1] for w in wall_polygons)
+        wx2 = max(w["box"][2] for w in wall_polygons)
+        wy2 = max(w["box"][3] for w in wall_polygons)
+        interior_mask[wy1:wy2, wx1:wx2] = True
+        interior_mask[clean_wall_mask > 0] = False
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    wall_dil = cv2.dilate(clean_wall_mask, np.ones((7, 7), np.uint8))
+    inv_rooms = (interior_mask & (wall_dil == 0)).astype(np.uint8) * 255
+    nr, rlab, rstats, _ = cv2.connectedComponentsWithStats(inv_rooms, 8)
+    unit_scale = (800.0 * 600.0) / max(1.0, float(orig_w * orig_h))
+    len_scale = math.sqrt(unit_scale)
+
+    valid_rooms = []
+    for ri in range(1, nr):
+        rx, ry, rw, rh, rarea = [int(v) for v in rstats[ri]]
+        norm_room_area = rarea * unit_scale
+        if norm_room_area < 500:
+            continue
+        rmask = rlab == ri
+        b_m = float(img[:, :, 0][rmask].mean())
+        g_m = float(img[:, :, 1][rmask].mean())
+        r_m = float(img[:, :, 2][rmask].mean())
+        s_m = float(hsv[:, :, 1][rmask].mean())
+        v_p30 = float(np.percentile(gray[rmask], 30))
+
+        # Exclude outdoor grass yards / wood decks
+        is_grass = g_m > max(r_m, b_m) + 6 and s_m >= 18
+        is_deck = r_m > b_m + 35 and s_m >= 50
+        overlaps_garage = False
+        overlaps_bath = False
+        overlaps_bed = False
+        for sp_nm, sp_cf, sb in space_boxes:
+            ix = max(0.0, min(rx + rw, sb[2]) - max(rx, sb[0]))
+            iy = max(0.0, min(ry + rh, sb[3]) - max(ry, sb[1]))
+            ov_r = (ix * iy) / max(1.0, rw * rh)
+            ov_s = (ix * iy) / max(1.0, (sb[2] - sb[0]) * (sb[3] - sb[1]))
+            if max(ov_r, ov_s) >= 0.45:
+                if "garage" in sp_nm and norm_room_area > 18000:
+                    overlaps_garage = True
+                if "bath" in sp_nm and norm_room_area < 15000:
+                    overlaps_bath = True
+                if "bedroom" in sp_nm and 6000 <= norm_room_area <= 36000:
+                    overlaps_bed = True
+        if is_grass or is_deck or overlaps_garage:
+            continue
+
+        room_kind = "living_kitchen"
+        if overlaps_bath or (b_m > r_m + 14 and s_m >= 18 and norm_room_area < 16000) or norm_room_area < 6000:
+            room_kind = "bath"
+        elif overlaps_bed or (6000 <= norm_room_area <= 35000):
+            room_kind = "bedroom"
+
+        valid_rooms.append({
+            "id": ri,
+            "mask": rmask,
+            "box": [rx, ry, rx + rw, ry + rh],
+            "norm_area": norm_room_area,
+            "mean_s": s_m,
+            "v_p30": v_p30,
+            "kind": room_kind,
+        })
+
+    # Collect per-room candidate boxes from Track C (YOLO), Track B (bright contrast), Track A (colored)
+    raw_candidates = []
+
+    # Track C: Explicit YOLO fixed-furniture inside interior rooms
+    interior_union = np.zeros((orig_h, orig_w), dtype=bool)
+    for rm in valid_rooms:
+        interior_union |= rm["mask"]
+    for lbl, bconf, b in yolo_furniture_boxes:
+        cx_i = min(orig_w - 1, max(0, int((b[0] + b[2]) / 2.0)))
+        cy_i = min(orig_h - 1, max(0, int((b[1] + b[3]) / 2.0)))
+        if not interior_union[cy_i, cx_i]:
+            continue
+        room_kind = "living_kitchen"
+        for rm in valid_rooms:
+            if rm["mask"][cy_i, cx_i]:
+                room_kind = rm["kind"]
+                break
+        bw_b = max(1.0, b[2] - b[0])
+        bh_b = max(1.0, b[3] - b[1])
+        raw_candidates.append(("yolo", b, (bw_b * bh_b) * unit_scale, lbl, room_kind, bconf))
+
+    for rm in valid_rooms:
+        rmask = rm["mask"]
+        room_kind = rm["kind"]
+        v_p30 = rm["v_p30"]
+        s_m = rm["mean_s"]
+        room_cands = []
+        is_vehicle_garage = False
+
+        # Track B: White / high-contrast furniture shapes inside shaded/tinted rooms
+        rm_w = max(1, rm["box"][2] - rm["box"][0])
+        rm_h = max(1, rm["box"][3] - rm["box"][1])
+        if v_p30 <= 243:
+            thr = max(242, int(v_p30) + 10)
+            br_fg = ((gray >= thr) & (hsv[:, :, 1] < 26) & rmask).astype(np.uint8) * 255
+            dark_edge = (gray < 140) & rmask
+            br_fg[dark_edge] = 0
+            br_fg = cv2.morphologyEx(br_fg, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            br_fg[dark_edge] = 0
+            nb, blab, bstats, _ = cv2.connectedComponentsWithStats(br_fg, 8)
+            for bi in range(1, nb):
+                fx, fy, fw, fh, farea = [int(v) for v in bstats[bi]]
+                na = farea * unit_scale
+                nw, nh = fw * len_scale, fh * len_scale
+                extent = na / max(1.0, nw * nh)
+                fills_whole_room = fw >= rm_w * 0.88 and fh >= rm_h * 0.88
+                if fills_whole_room:
+                    continue
+                if rm["norm_area"] >= 24000 and 8500 <= na <= 28000 and extent >= 0.45:
+                    is_vehicle_garage = True
+                    break
+                if 150 <= na <= 7500 and nw >= 10 and nh >= 10 and extent >= 0.42:
+                    box_b = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
+                    room_cands.append(("bright", box_b, na, None, room_kind, 0.90))
+
+        if is_vehicle_garage:
+            continue
+
+        # Track A: Saturated colored furniture inside neutral/light floors
+        if s_m < 16:
+            col_fg = ((hsv[:, :, 1] >= 10) & (hsv[:, :, 2] > 95) & rmask).astype(np.uint8) * 255
+            col_fg = cv2.morphologyEx(col_fg, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+            nc, clab, cstats, _ = cv2.connectedComponentsWithStats(col_fg, 8)
+            for ci in range(1, nc):
+                fx, fy, fw, fh, farea = [int(v) for v in cstats[ci]]
+                na = farea * unit_scale
+                nw, nh = fw * len_scale, fh * len_scale
+                if not (140 <= na <= 7500 and nw >= 8 and nh >= 8):
+                    continue
+                comp_mask = clab == ci
+                b_c = float(img[:, :, 0][comp_mask].mean())
+                g_c = float(img[:, :, 1][comp_mask].mean())
+                r_c = float(img[:, :, 2][comp_mask].mean())
+                # Skip small green decorative houseplants
+                if g_c > max(r_c, b_c) + 12 and na < 650:
+                    continue
+                box_c = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
+                room_cands.append(("color", box_c, na, None, room_kind, 0.88))
+
+        raw_candidates.extend(room_cands)
+
+    # Deduplicate overlapping candidates (YOLO > bright on shaded rooms > color on neutral rooms)
+    priority_order = {"yolo": 0, "bright": 1, "color": 2}
+    raw_candidates.sort(key=lambda c: (priority_order.get(c[0], 9), -c[2]))
+
+    filtered_candidates = []
+    for src, box, na, hint_lbl, room_kind, conf_val in raw_candidates:
+        if any(_boxes_overlap_ratio(box, pb[1]) > 0.35 for pb in filtered_candidates):
+            continue
+        filtered_candidates.append((src, box, na, hint_lbl, room_kind, conf_val))
 
     dining_boxes = []
-    island_boxes = []
+    sofa_boxes = []
+    preliminary_tables = []
 
-    for fi in range(1, num_f):
-        fx, fy, fw, fh, farea = [int(v) for v in fstats[fi]]
-        if farea < 140 or fw < 10 or fh < 10:
-            continue
-        aspect = max(fw, fh) / max(1.0, min(fw, fh))
-        mean_h = float(hsv[:, :, 0][flabels == fi].mean())
-        label = None
-        is_island = False
-        is_dining = False
+    def _wall_contact_ratio(box_c):
+        x1, y1, x2, y2 = [int(round(v)) for v in box_c]
+        pad = 6
+        edge_vals = [
+            float((clean_wall_mask[max(0, y1 - pad):max(0, y1), max(0, x1):min(orig_w, x2)] > 0).mean()) if y1 > 0 else 0.0,
+            float((clean_wall_mask[min(orig_h, y2):min(orig_h, y2 + pad), max(0, x1):min(orig_w, x2)] > 0).mean()) if y2 < orig_h else 0.0,
+            float((clean_wall_mask[max(0, y1):min(orig_h, y2), max(0, x1 - pad):max(0, x1)] > 0).mean()) if x1 > 0 else 0.0,
+            float((clean_wall_mask[max(0, y1):min(orig_h, y2), min(orig_w, x2):min(orig_w, x2 + pad)] > 0).mean()) if x2 < orig_w else 0.0,
+        ]
+        return max(edge_vals)
 
-        if farea >= 1400 and fy < orig_h * 0.45:
-            fy_top = max(45, fy - 16)
-            fh = (fy + fh) - fy_top
-            fy = fy_top
-            label = "bed"
-        elif farea >= 850 and fy < orig_h * 0.45 and fw < fh:
-            label = "bed"
-        elif 450 <= farea < 850 and fy < orig_h * 0.45 and aspect < 2.2:
-            label = "desk"
-        elif farea >= 1200 and fy >= orig_h * 0.65 and fw > fh * 1.3:
-            label = "sofa"
-        elif farea >= 1100 and 0.45 * orig_h <= fy <= 0.75 * orig_h:
-            label = "table"
-            is_dining = True
-        elif 320 <= farea <= 750 and 0.75 <= aspect <= 1.35 and mean_h > 85:
-            label = "chair"
-        elif aspect >= 2.2 and fh <= 22:
-            if fy < orig_h * 0.50:
-                label = "wardrobe"
-            elif mean_h < 45 or mean_h > 70:
-                label = "tv_cabinet"
+    for src, box, na, hint_lbl, room_kind, conf_val in filtered_candidates:
+        bx1, by1, bx2, by2 = box
+        nw = max(1.0, (bx2 - bx1) * len_scale)
+        nh = max(1.0, (by2 - by1) * len_scale)
+        aspect = max(nw, nh) / max(1.0, min(nw, nh))
+        label = hint_lbl
+        model_override = None
+
+        if label is None:
+            if room_kind == "bath":
+                if na >= 700 and aspect <= 1.65:
+                    label = "shower"
+                elif na < 700 and aspect >= 1.35:
+                    label = "toilet"
+                elif na < 700:
+                    label = "sink"
+            elif room_kind == "bedroom":
+                if na >= 1650 and aspect <= 1.95 and min(nw, nh) >= 28:
+                    label = "bed"
+                elif na < 450 and aspect < 1.85:
+                    label = "nightstand"
+                elif aspect >= 2.1 and min(nw, nh) <= 26 and na >= 450:
+                    label = "wardrobe"
+                elif 450 <= na < 1650 and aspect < 2.2:
+                    label = "desk"
             else:
-                # Kitchen island stools - place island counter below the stool row
-                island_box = [fx - 4, fy + 12, fx + fw + 4, fy + 48]
-                bx1, by1, bx2, by2 = [max(0, island_box[0]), max(0, island_box[1]), min(orig_w, island_box[2]), min(orig_h, island_box[3])]
-                fx, fy, fw, fh = bx1, by1, bx2 - bx1, by2 - by1
-                label = "table"
-                is_island = True
-        elif farea < 350 and fy < orig_h * 0.30:
-            label = "nightstand"
+                # Living / Dining / Kitchen / Hallway
+                if aspect >= 2.2 and min(nw, nh) <= 25 and na >= 420:
+                    label = "tv_cabinet" if na >= 550 else "wardrobe"
+                elif na >= 1350 and aspect >= 1.45 and min(nw, nh) <= 44:
+                    label = "sofa"
+                elif na >= 1100 and min(nw, nh) >= 26:
+                    if aspect >= 1.6 and _wall_contact_ratio(box) >= 0.30:
+                        label = "high_cabinet"
+                    else:
+                        label = "table"
+                        preliminary_tables.append((box, na, aspect))
+                elif 240 <= na <= 1150 and aspect <= 1.55:
+                    label = "chair"
 
         if label is None:
             continue
 
-        box_coords = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
-        occupied_mask[int(fy):int(fy + fh), int(fx):int(fx + fw)] = 255
-        append_furniture(label, box_coords, MODEL_MAP.get(label, None), confidence=0.92)
-        if is_dining:
-            dining_boxes.append(box_coords)
-        if is_island:
-            island_boxes.append(box_coords)
+        model_file = model_override or MODEL_MAP.get(label)
+        if not model_file:
+            continue
 
-    # Detect Kitchen Island if not already covered
-    k_cand = [int(orig_w * 0.65), int(orig_h * 0.54), int(orig_w * 0.78), int(orig_h * 0.69)]
-    if occupied_mask[k_cand[1]:k_cand[3], k_cand[0]:k_cand[2]].mean() < 30:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        k_sub = gray[k_cand[1]-10:k_cand[3]+10, k_cand[0]-10:k_cand[2]+10]
-        k_th = cv2.adaptiveThreshold(k_sub, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 4)
-        cnts, _ = cv2.findContours(k_th, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        for c in cnts:
-            cx, cy, cw, ch = cv2.boundingRect(c)
-            if 40 <= cw <= 75 and 25 <= ch <= 55:
-                real_b = [float(k_cand[0]-10+cx), float(k_cand[1]-10+cy), float(k_cand[0]-10+cx+cw), float(k_cand[1]-10+cy+ch)]
-                occupied_mask[int(real_b[1]):int(real_b[3]), int(real_b[0]):int(real_b[2])] = 255
-                append_furniture("table", real_b, "TableB1.glb", confidence=0.89)
-                island_boxes.append(real_b)
-                break
+        if label == "sofa":
+            sofa_boxes.append(box)
+        if label == "table":
+            # Coffee table vs Dining table refinement
+            if na <= 1900 and aspect <= 1.6:
+                model_file = "TableS2.glb"
+            else:
+                model_file = "TableB1.glb"
+                dining_boxes.append(box)
 
-    # Add 4 dining chairs tucked cleanly along the Dining Table's long sides
+        append_furniture(label, box, model_file, confidence=round(conf_val, 2))
+
+    # Add 4 dining chairs cleanly along Dining Table long sides
     for db in dining_boxes:
         dcx = (db[0] + db[2]) / 2.0
         dcy = (db[1] + db[3]) / 2.0
-        dx_off = max(11.0, (db[2] - db[0]) * 0.22)
-        dy_off = max(13.5, (db[3] - db[1]) * 0.45)
-        for sx in (-1.0, 1.0):
-            # North chairs facing South (+Z)
-            px, py = dcx + sx * dx_off, dcy - dy_off
-            append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=0.0)
-            # South chairs facing North (-Z)
-            px, py = dcx + sx * dx_off, dcy + dy_off
-            append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=math.pi)
+        dw = db[2] - db[0]
+        dh = db[3] - db[1]
+        if dw >= dh:
+            dx_off = max(11.0, dw * 0.22)
+            dy_off = max(13.5, dh * 0.52)
+            for sx in (-1.0, 1.0):
+                px, py = dcx + sx * dx_off, dcy - dy_off
+                append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=0.0)
+                px, py = dcx + sx * dx_off, dcy + dy_off
+                append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=math.pi)
+        else:
+            dx_off = max(13.5, dw * 0.52)
+            dy_off = max(11.0, dh * 0.22)
+            for sy in (-1.0, 1.0):
+                px, py = dcx - dx_off, dcy + sy * dy_off
+                append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=math.pi / 2.0)
+                px, py = dcx + dx_off, dcy + sy * dy_off
+                append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=-math.pi / 2.0)
 
-    # Add 3 stools tucked along the Kitchen Island's north edge
-    for ib in island_boxes:
-        icx = (ib[0] + ib[2]) / 2.0
-        icy = (ib[1] + ib[3]) / 2.0
-        span = max(20.0, (ib[2] - ib[0]) * 0.26)
-        sy = icy - max(13.5, (ib[3] - ib[1]) * 0.52)
-        for sx in (-span, 0.0, span):
-            px = icx + sx
-            append_furniture("chair", [px - 6, sy - 6, px + 6, sy + 6], "Chair1.glb", confidence=0.86, angle_rad=0.0)
-
-    # Detect Coffee Table in living room and aim surrounding lounge chairs toward it
-    coffee_center = None
-    c_cand = [int(orig_w * 0.25), int(orig_h * 0.63), int(orig_w * 0.34), int(orig_h * 0.73)]
-    if occupied_mask[c_cand[1]:c_cand[3], c_cand[0]:c_cand[2]].mean() < 30:
-        real_cb = [172.0, 236.0, 208.0, 258.0]
-        if real_cb[2] <= orig_w and real_cb[3] <= orig_h:
-            append_furniture("table", real_cb, "TableS2.glb", confidence=0.88)
-            coffee_center = ((real_cb[0] + real_cb[2]) / 2.0, (real_cb[1] + real_cb[3]) / 2.0)
-
-    if coffee_center is not None:
-        tx, ty = coffee_center
+    # Aim any free-standing lounge chairs toward the nearest coffee/living table
+    coffee_tables = [f for f in furniture if f.get("model_file") == "TableS2.glb"]
+    if coffee_tables:
         for item in furniture:
-            if item["label"] == "chair" and item["center"][0] < orig_w * 0.45 and item["center"][1] > orig_h * 0.50:
+            if item["label"] == "chair" and not any(_boxes_overlap_ratio(item["box"], db) > 0 for db in dining_boxes):
                 cx, cy = item["center"]
-                ang = math.atan2(tx - cx, ty - cy)
-                item["angle_rad"] = round(ang, 4)
-                item["angle_deg"] = round(math.degrees(ang), 1)
-
-    # 4. Bathroom items (unified under furniture with 3D catalog models)
-    raw_bath_furniture = [
-        {"label": "shower", "box": [250, 150, 276, 176], "angle_rad": 0.0},
-        {"label": "toilet", "box": [304, 152, 324, 176], "angle_rad": 0.0},
-        {"label": "sink",   "box": [336, 152, 356, 176], "angle_rad": 0.0},
-        {"label": "toilet", "box": [382, 48, 404, 68],  "angle_rad": 0.0},
-        {"label": "sink",   "box": [398, 72, 418, 92],  "angle_rad": -math.pi / 2.0},
-    ]
-    for rf in raw_bath_furniture:
-        fb = rf["box"]
-        if fb[2] <= orig_w and fb[3] <= orig_h:
-            append_furniture(rf["label"], fb, MODEL_MAP.get(rf["label"]), confidence=0.90, angle_rad=rf.get("angle_rad"))
+                nearest_t = min(coffee_tables, key=lambda t: math.hypot(t["center"][0] - cx, t["center"][1] - cy))
+                tx, ty = nearest_t["center"]
+                if math.hypot(tx - cx, ty - cy) <= max(orig_w, orig_h) * 0.22:
+                    ang = math.atan2(tx - cx, ty - cy)
+                    item["angle_rad"] = round(ang, 4)
+                    item["angle_deg"] = round(math.degrees(ang), 1)
 
     # Project wall edges into canvas space
     canvas_wall_edges = []

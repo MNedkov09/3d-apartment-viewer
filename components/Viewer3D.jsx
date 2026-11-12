@@ -94,6 +94,7 @@ function computeBounds(edges, pixelsPerMeter) {
 
 export function createFloorMaterial(style = "wood", bounds, scene) {
   const mat = new PBRMaterial(`floorMat_${style}_${Date.now()}`, scene);
+  mat.zOffset = -1;
   const size = 1024;
   const tex = new DynamicTexture(`floorTex_${style}_${Date.now()}`, { width: size, height: size }, scene, true);
   const ctx = tex.getContext();
@@ -2096,7 +2097,8 @@ export default function Viewer3D({
     camera.panningSensibility = 260;
     camera.panningAxis = new Vector3(1, 0, 1); // Pan horizontally across the floorplan, never underground!
     camera.inertia = 0.82;
-    camera.minZ = 0.08;
+    camera.minZ = 0.25;
+    camera.maxZ = Math.max(250, cameraDistance * 12);
 
     const wasdSpeed = 7.5;
 
@@ -2116,12 +2118,15 @@ export default function Viewer3D({
     dirLight.position = new Vector3(bounds.cx + 12, 22, bounds.cz + 12);
     dirLight.intensity = 0.95;
     dirLight.diffuse = new Color3(1.0, 0.98, 0.92);
+    dirLight.shadowMinZ = 2;
+    dirLight.shadowMaxZ = Math.max(80, cameraDistance * 3);
 
     const shadowGen = new ShadowGenerator(2048, dirLight);
-    shadowGen.useBlurExponentialShadowMap = true;
-    shadowGen.blurKernel = 32;
-    shadowGen.darkness = 0.28; // Soft realistic shadows, not harsh pitch black!
-    shadowGen.bias = 0.002;
+    shadowGen.usePercentageCloserFiltering = true;
+    shadowGen.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+    shadowGen.darkness = 0.22; // Soft realistic shadows, not harsh pitch black!
+    shadowGen.bias = 0.001;
+    shadowGen.normalBias = 0.025;
 
     // 3. Interior Fill Light (Brightens room interiors under 2.7m full walls)
     const fillLight = new DirectionalLight(
@@ -2142,35 +2147,35 @@ export default function Viewer3D({
         width: floorW,
         height: floorD,
         subdivisions: 2,
-        onReady: (mesh) => {
-          mesh.receiveShadows = true;
-        },
       },
       scene,
     );
     const floorY = 0.0;
     floor.position = new Vector3(bounds.cx, floorY, bounds.cz);
+    floor.receiveShadows = true;
     floorYRef.current = floorY;
 
     const floorMat = createFloorMaterial(floorStyle, bounds, scene);
+    floorMat.zOffset = -1;
     floor.material = floorMat;
     floorMeshRef.current = floor;
 
-    // Solid architectural concrete foundation slab directly beneath the floor
+    // Solid architectural concrete foundation slab positioned cleanly beneath the floor (zero Z-fighting)
     const slabMat = new PBRMaterial("foundationSlabMat", scene);
     slabMat.albedoColor = new Color3(0.22, 0.25, 0.30);
     slabMat.roughness = 0.85;
     slabMat.metallic = 0.05;
+    slabMat.zOffset = 2;
     const floorSlab = MeshBuilder.CreateBox(
       "floorSlab",
       {
         width: floorW + 0.06,
         depth: floorD + 0.06,
-        height: 0.18,
+        height: 0.16,
       },
       scene,
     );
-    floorSlab.position = new Vector3(bounds.cx, -0.092, bounds.cz);
+    floorSlab.position = new Vector3(bounds.cx, -0.105, bounds.cz);
     floorSlab.material = slabMat;
 
     // 5. Build Wall Geometry (Full 2.7m walls with gap-free merged non-coplanar corners)
@@ -2217,8 +2222,8 @@ export default function Viewer3D({
         : cutWithWindows;
 
     cutWallMeshes.forEach((mesh) => {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+      shadowGen.addShadowCaster(mesh);
+      mesh.receiveShadows = true;
     });
     wallMeshesRef.current = cutWallMeshes;
 

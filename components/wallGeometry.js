@@ -90,25 +90,6 @@ function extractMergedWallSegments(edges, scale) {
   const rawV = []; // { x, minZ, maxZ }
   const rawDiag = []; // { x1, z1, x2, z2 }
 
-  let bMinX = Infinity,
-    bMaxX = -Infinity,
-    bMinZ = Infinity,
-    bMaxZ = -Infinity;
-
-  for (const edge of edges) {
-    if (!edge.points || edge.points.length < 2) continue;
-    for (const [px, py] of edge.points) {
-      const wx = px * scale;
-      const wz = py * scale;
-      if (wx < bMinX) bMinX = wx;
-      if (wx > bMaxX) bMaxX = wx;
-      if (wz < bMinZ) bMinZ = wz;
-      if (wz > bMaxZ) bMaxZ = wz;
-    }
-  }
-  const bw = Math.max(1, bMaxX - bMinX);
-  const bd = Math.max(1, bMaxZ - bMinZ);
-
   for (const edge of edges) {
     if (!edge.points || edge.points.length < 2) continue;
     const pts = edge.points.map(([x, y]) => [x * scale, y * scale]);
@@ -125,32 +106,11 @@ function extractMergedWallSegments(edges, scale) {
         const z = (z1 + z2) / 2;
         const minX = Math.min(x1, x2);
         const maxX = Math.max(x1, x2);
-        const nz = (z - bMinZ) / bd;
-        const nx1 = (minX - bMinX) / bw;
-        const nx2 = (maxX - bMinX) / bw;
-        // Skip false wall blocking the entrance foyer ("ENTRY" label / closet top line)
-        if (nz >= 0.80 && nz <= 0.92 && nx1 >= 0.36 && nx2 <= 0.64 && nx2 - nx1 <= 0.25) {
-          continue;
-        }
         rawH.push({ z, minX, maxX });
       } else if (Math.abs(dx) <= Math.max(0.14, Math.abs(dz) * 0.15)) {
         const x = (x1 + x2) / 2;
         const minZ = Math.min(z1, z2);
         const maxZ = Math.max(z1, z2);
-        const nx = (x - bMinX) / bw;
-        const nz1 = (minZ - bMinZ) / bd;
-        const nz2 = (maxZ - bMinZ) / bd;
-        const nLen = nz2 - nz1;
-        // Skip false entry closet side walls & tiny wardrobe/counter stubs
-        if (nx >= 0.38 && nx <= 0.44 && nz1 >= 0.82) continue;
-        if (nx >= 0.56 && nx <= 0.62 && nz1 >= 0.82 && nz2 <= 0.92) continue;
-        if (
-          nLen <= 0.08 &&
-          ((nx >= 0.68 && nx <= 0.74 && nz1 >= 0.80) ||
-            (nx >= 0.82 && nx <= 0.89 && nz1 >= 0.35 && nz2 <= 0.48))
-        ) {
-          continue;
-        }
         rawV.push({ x, minZ, maxZ });
       } else {
         rawDiag.push({ x1, z1, x2, z2 });
