@@ -82,14 +82,10 @@ function buildAxisSnapper(coords, tol = 0.14) {
 }
 
 /**
- * Build clean, merged, non-overlapping wall meshes for the entire wall graph.
- * Fuses collinear segments across T-junctions and offsets vertical walls by 1mm
- * so no two wall faces are ever coplanar (eliminating Z-fighting 100%).
+ * Parse raw skeleton edges, drop false architectural artifacts, cluster orthogonal
+ * axes, merge collinear segments across T-junctions, and snap L-corners / T-junctions.
  */
-export function buildWallMeshes(edges, opts, scene) {
-  const { thickness, height, scale } = opts;
-  if (!edges || edges.length === 0) return [];
-
+function extractMergedWallSegments(edges, scale) {
   const rawH = []; // { z, minX, maxX }
   const rawV = []; // { x, minZ, maxZ }
   const rawDiag = []; // { x1, z1, x2, z2 }
@@ -169,7 +165,6 @@ export function buildWallMeshes(edges, opts, scene) {
   const snapZ = buildAxisSnapper(rawH.map((s) => s.z), axisTol);
   const snapX = buildAxisSnapper(rawV.map((s) => s.x), axisTol);
 
-  // Group horizontal segments by snapped Z and merge overlapping/touching intervals
   const hGroups = new Map();
   for (const seg of rawH) {
     const sz = snapZ(seg.z);
@@ -182,7 +177,6 @@ export function buildWallMeshes(edges, opts, scene) {
     list.sort((a, b) => a.minX - b.minX);
     let cur = { z, minX: list[0].minX, maxX: list[0].maxX };
     for (let i = 1; i < list.length; i++) {
-      // Bridge small T-junction skeleton gaps, but preserve doorway gaps
       if (list[i].minX <= cur.maxX + bridgeGap) {
         cur.maxX = Math.max(cur.maxX, list[i].maxX);
       } else {
@@ -193,7 +187,6 @@ export function buildWallMeshes(edges, opts, scene) {
     mergedH.push(cur);
   }
 
-  // Group vertical segments by snapped X and merge overlapping/touching intervals
   const vGroups = new Map();
   for (const seg of rawV) {
     const sx = snapX(seg.x);
@@ -231,6 +224,20 @@ export function buildWallMeshes(edges, opts, scene) {
       }
     }
   }
+
+  return { mergedH, mergedV, rawDiag };
+}
+
+/**
+ * Build clean, merged, non-overlapping wall meshes for the entire wall graph.
+ * Fuses collinear segments across T-junctions and offsets vertical walls by 1mm
+ * so no two wall faces are ever coplanar (eliminating Z-fighting 100%).
+ */
+export function buildWallMeshes(edges, opts, scene) {
+  const { thickness, height, scale } = opts;
+  if (!edges || edges.length === 0) return [];
+
+  const { mergedH, mergedV, rawDiag } = extractMergedWallSegments(edges, scale);
 
   const allMeshes = [];
   let idx = 0;
@@ -316,4 +323,206 @@ export function buildWallMeshes(edges, opts, scene) {
 
 export function edgeToWallMesh(edge, opts, scene) {
   return buildWallMeshes([edge], opts, scene);
+}
+
+function subtractIntervals(minVal, maxVal, cuts) {
+  if (!cuts || cuts.length === 0) return [[minVal, maxVal]];
+  const sorted = [...cuts].sort((a, b) => a[0] - b[0]);
+  const res = [];
+  let cursor = minVal;
+  for (const [cMin, cMax] of sorted) {
+    if (cMax <= cursor) continue;
+    if (cMin >= maxVal) break;
+    if (cMin > cursor + 0.02) {
+      res.push([cursor, Math.min(cMin, maxVal)]);
+    }
+    cursor = Math.max(cursor, cMax);
+  }
+  if (cursor < maxVal - 0.02) {
+    res.push([cursor, maxVal]);
+  }
+  return res;
+}
+
+/**
+ * Build 2D XZ solid wall collider boxes matching the final walls with door openings subtracted.
+ */
+export function buildWallColliders(edges, doors, opts) {
+  const { thickness, scale } = opts;
+  if (!edges || edges.length === 0) return [];
+
+  const { mergedH, mergedV, rawDiag } = extractMergedWallSegments(edges, scale);
+  const halfT = thickness / 2;
+
+  const doorBoxes = (doors || [])
+    .filter((d) => d.start && d.end)
+    .map((d) => {
+      const x1 = d.start[0] * scale;
+      const z1 = d.start[1] * scale;
+      const x2 = d.end[0] * scale;
+      const z2 = d.end[1] * scale;
+      const dx = x2 - x1;
+      const dz = z2 - z1;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.05) return null;
+      const cx = (x1 + x2) / 2;
+      const cz = (z1 + z2) / 2;
+      const rotY = Math.atan2(dx, dz);
+      const cw = thickness * 3.5;
+      const cd = len + 0.22;
+      const hx = (Math.abs(cw * Math.cos(rotY)) + Math.abs(cd * Math.sin(rotY))) / 2;
+      const hz = (Math.abs(cw * Math.sin(rotY)) + Math.abs(cd * Math.cos(rotY))) / 2;
+      return { minX: cx - hx, maxX: cx + hx, minZ: cz - hz, maxZ: cz + hz };
+    })
+    .filter(Boolean);
+
+  const colliders = [];
+
+  for (const h of mergedH) {
+    if (h.maxX - h.minX < 0.05) continue;
+    const minZ = h.z - halfT;
+    const maxZ = h.z + halfT;
+    const cuts = doorBoxes
+      .filter((d) => d.maxZ >= minZ && d.minZ <= maxZ)
+      .map((d) => [d.minX, d.maxX]);
+    for (const [sx, ex] of subtractIntervals(h.minX - halfT, h.maxX + halfT, cuts)) {
+      colliders.push({ minX: sx, maxX: ex, minZ, maxZ });
+    }
+  }
+
+  for (const v of mergedV) {
+    if (v.maxZ - v.minZ < 0.05) continue;
+    const minX = v.x - halfT;
+    const maxX = v.x + halfT;
+    const cuts = doorBoxes
+      .filter((d) => d.maxX >= minX && d.minX <= maxX)
+      .map((d) => [d.minZ, d.maxZ]);
+    for (const [sz, ez] of subtractIntervals(v.minZ - halfT, v.maxZ + halfT, cuts)) {
+      colliders.push({ minX, maxX, minZ: sz, maxZ: ez });
+    }
+  }
+
+  for (const d of rawDiag) {
+    const len = Math.hypot(d.x2 - d.x1, d.z2 - d.z1);
+    if (len < 0.05) continue;
+    const steps = Math.max(2, Math.ceil(len / (thickness * 0.8)));
+    for (let s = 0; s < steps; s++) {
+      const t = (s + 0.5) / steps;
+      const px = d.x1 + (d.x2 - d.x1) * t;
+      const pz = d.z1 + (d.z2 - d.z1) * t;
+      colliders.push({ minX: px - halfT, maxX: px + halfT, minZ: pz - halfT, maxZ: pz + halfT });
+    }
+  }
+
+  return colliders;
+}
+
+/**
+ * Compute world-space XZ footprint bounds for a placed furniture model at (rootX, rootZ) rotated by yaw.
+ */
+function getRotatedFootprintBounds(rootX, rootZ, footprint, yaw) {
+  const { cx = 0, cz = 0, halfX = 0.25, halfZ = 0.25 } = footprint || {};
+  const cosY = Math.cos(yaw || 0);
+  const sinY = Math.sin(yaw || 0);
+  // Babylon left-handed Y rotation: x' = x*cos(y) + z*sin(y), z' = -x*sin(y) + z*cos(y)
+  const worldCenterX = rootX + cx * cosY + cz * sinY;
+  const worldCenterZ = rootZ - cx * sinY + cz * cosY;
+  const effHalfX = Math.abs(halfX * cosY) + Math.abs(halfZ * sinY);
+  const effHalfZ = Math.abs(halfX * sinY) + Math.abs(halfZ * cosY);
+  return {
+    offsetX: worldCenterX - rootX,
+    offsetZ: worldCenterZ - rootZ,
+    effHalfX,
+    effHalfZ,
+    minX: worldCenterX - effHalfX,
+    maxX: worldCenterX + effHalfX,
+    minZ: worldCenterZ - effHalfZ,
+    maxZ: worldCenterZ + effHalfZ,
+  };
+}
+
+/**
+ * Push a furniture root position (x, z) cleanly outside any colliding wall colliders
+ * and keep it inside the apartment perimeter bounds.
+ */
+export function pushOutOfWalls(x, z, footprint, yaw, colliders, roomBounds, clearance = 0.015) {
+  let rx = x;
+  let rz = z;
+  const b = getRotatedFootprintBounds(rx, rz, footprint, yaw);
+
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    if (colliders && colliders.length > 0) {
+      for (const wall of colliders) {
+        const wMinX = wall.minX - clearance;
+        const wMaxX = wall.maxX + clearance;
+        const wMinZ = wall.minZ - clearance;
+        const wMaxZ = wall.maxZ + clearance;
+
+        const curMinX = rx + b.offsetX - b.effHalfX;
+        const curMaxX = rx + b.offsetX + b.effHalfX;
+        const curMinZ = rz + b.offsetZ - b.effHalfZ;
+        const curMaxZ = rz + b.offsetZ + b.effHalfZ;
+
+        if (curMaxX > wMinX && curMinX < wMaxX && curMaxZ > wMinZ && curMinZ < wMaxZ) {
+          const pushLeft = curMaxX - wMinX;
+          const pushRight = wMaxX - curMinX;
+          const pushBack = curMaxZ - wMinZ;
+          const pushForward = wMaxZ - curMinZ;
+          const minXMove = pushLeft < pushRight ? -pushLeft : pushRight;
+          const minZMove = pushBack < pushForward ? -pushBack : pushForward;
+
+          if (Math.abs(minXMove) <= Math.abs(minZMove)) {
+            rx += minXMove;
+          } else {
+            rz += minZMove;
+          }
+          moved = true;
+        }
+      }
+    }
+
+    if (roomBounds) {
+      const clampedMinX = roomBounds.minX + b.effHalfX - b.offsetX;
+      const clampedMaxX = roomBounds.maxX - b.effHalfX - b.offsetX;
+      const clampedMinZ = roomBounds.minZ + b.effHalfZ - b.offsetZ;
+      const clampedMaxZ = roomBounds.maxZ - b.effHalfZ - b.offsetZ;
+      if (clampedMinX <= clampedMaxX) rx = Math.max(clampedMinX, Math.min(clampedMaxX, rx));
+      if (clampedMinZ <= clampedMaxZ) rz = Math.max(clampedMinZ, Math.min(clampedMaxZ, rz));
+    }
+
+    if (!moved) break;
+  }
+
+  return { x: rx, z: rz };
+}
+
+/**
+ * Move furniture smoothly from (curX, curZ) toward (targetX, targetZ) with substepping
+ * so models slide cleanly along walls and never tunnel across thin walls.
+ */
+export function moveWithWallCollision(curX, curZ, targetX, targetZ, footprint, yaw, colliders, roomBounds) {
+  const dx = targetX - curX;
+  const dz = targetZ - curZ;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1e-5) return { x: curX, z: curZ };
+
+  const maxStep = 0.04;
+  const steps = Math.max(1, Math.min(60, Math.ceil(dist / maxStep)));
+  let rx = curX;
+  let rz = curZ;
+
+  for (let s = 0; s < steps; s++) {
+    const nextX = rx + dx / steps;
+    const resX = pushOutOfWalls(nextX, rz, footprint, yaw, colliders, roomBounds);
+    rx = resX.x;
+    rz = resX.z;
+
+    const nextZ = rz + dz / steps;
+    const resZ = pushOutOfWalls(rx, nextZ, footprint, yaw, colliders, roomBounds);
+    rx = resZ.x;
+    rz = resZ.z;
+  }
+
+  return { x: rx, z: rz };
 }

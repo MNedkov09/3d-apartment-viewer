@@ -21,7 +21,13 @@ import {
   Plane,
 } from "@babylonjs/core";
 import { GLTFFileLoader } from "@babylonjs/loaders";
-import { buildWallMeshes, applyWorldSpaceWallUVs } from "./wallGeometry";
+import {
+  buildWallMeshes,
+  applyWorldSpaceWallUVs,
+  buildWallColliders,
+  pushOutOfWalls,
+  moveWithWallCollision,
+} from "./wallGeometry";
 
 // Register the GLTF loader once at module load time
 SceneLoader.RegisterPlugin(new GLTFFileLoader());
@@ -1553,6 +1559,9 @@ export default function Viewer3D({
   const doorsRef = useRef(doors);
   const modelRotationRef = useRef(new Map());
   const yawAngleRef = useRef(new Map());
+  const modelFootprintRef = useRef(new Map());
+  const wallCollidersRef = useRef([]);
+  const roomBoundsRef = useRef(null);
   const containerRef = useRef(null);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1589,6 +1598,25 @@ export default function Viewer3D({
     () => computeBounds(edges, pixelsPerMeter),
     [edges, pixelsPerMeter],
   );
+
+  const wallColliders = useMemo(
+    () =>
+      buildWallColliders(edges, doors, {
+        thickness: wallThicknessMeters,
+        scale: 1 / pixelsPerMeter,
+      }),
+    [edges, doors, wallThicknessMeters, pixelsPerMeter],
+  );
+
+  useEffect(() => {
+    wallCollidersRef.current = wallColliders;
+    roomBoundsRef.current = {
+      minX: bounds.cx - bounds.w / 2,
+      maxX: bounds.cx + bounds.w / 2,
+      minZ: bounds.cz - bounds.d / 2,
+      maxZ: bounds.cz + bounds.d / 2,
+    };
+  }, [wallColliders, bounds]);
 
   const cameraDistance = useMemo(() => {
     const diag = Math.hypot(bounds.w, bounds.d);
@@ -1729,12 +1757,25 @@ export default function Viewer3D({
           node.parent = modelRoot;
         });
 
-        // Compute local bounding box to align model bottom with ground
+        // Compute full hierarchy bounds relative to unmoved modelRoot (handles GLTF __root__ Z-flip)
+        modelRoot.position.set(0, 0, 0);
+        modelRoot.rotation.set(0, 0, 0);
+        modelRoot.computeWorldMatrix(true);
+
         let minLocalY = Infinity;
+        let minLocalX = Infinity;
+        let maxLocalX = -Infinity;
+        let minLocalZ = Infinity;
+        let maxLocalZ = -Infinity;
         for (const m of meshes) {
           if (m.getTotalVertices && m.getTotalVertices() > 0) {
+            m.computeWorldMatrix(true);
             const b = m.getBoundingInfo().boundingBox;
-            if (b.minimum.y < minLocalY) minLocalY = b.minimum.y;
+            if (b.minimumWorld.y < minLocalY) minLocalY = b.minimumWorld.y;
+            if (b.minimumWorld.x < minLocalX) minLocalX = b.minimumWorld.x;
+            if (b.maximumWorld.x > maxLocalX) maxLocalX = b.maximumWorld.x;
+            if (b.minimumWorld.z < minLocalZ) minLocalZ = b.minimumWorld.z;
+            if (b.maximumWorld.z > maxLocalZ) maxLocalZ = b.maximumWorld.z;
             m.castShadow = true;
             m.receiveShadow = true;
             if (m.material instanceof PBRMaterial) {
@@ -1743,15 +1784,34 @@ export default function Viewer3D({
           }
         }
 
+        const footprint =
+          isFinite(minLocalX) && isFinite(minLocalZ)
+            ? {
+                cx: (minLocalX + maxLocalX) / 2,
+                cz: (minLocalZ + maxLocalZ) / 2,
+                halfX: Math.max(0.08, (maxLocalX - minLocalX) / 2),
+                halfZ: Math.max(0.08, (maxLocalZ - minLocalZ) / 2),
+              }
+            : { cx: 0, cz: 0, halfX: 0.25, halfZ: 0.25 };
+
+        const resolvedPos = pushOutOfWalls(
+          spawnPoint.x,
+          spawnPoint.z,
+          footprint,
+          rotationY,
+          wallCollidersRef.current,
+          roomBoundsRef.current,
+        );
+
         const yOffset = isFinite(minLocalY) ? -minLocalY : 0;
-        modelRoot.position.set(spawnPoint.x, spawnPoint.y + yOffset, spawnPoint.z);
+        modelRoot.position.set(resolvedPos.x, spawnPoint.y + yOffset, resolvedPos.z);
         if (rotationY) {
           modelRoot.rotation.y = rotationY;
         }
 
         const entry = {
           name,
-          position: [spawnPoint.x - bounds.cx, yOffset, spawnPoint.z - bounds.cz],
+          position: [resolvedPos.x - bounds.cx, yOffset, resolvedPos.z - bounds.cz],
           rotation: [0, rotationY, 0],
           scaling: [1, 1, 1],
           url,
@@ -1759,6 +1819,7 @@ export default function Viewer3D({
         };
 
         yawAngleRef.current.set(modelRoot, rotationY);
+        modelFootprintRef.current.set(modelRoot, footprint);
         modelRotationRef.current.set(modelRoot, {
           initialQuaternion: Quaternion.RotationYawPitchRoll(rotationY, 0, 0),
         });
@@ -1842,6 +1903,7 @@ export default function Viewer3D({
       mapping.root.dispose();
     }
     meshToModelRef.current.clear();
+    modelFootprintRef.current.clear();
     setPlacedModels([]);
     showToast("Cleared all furniture");
   }, [showToast]);
@@ -1853,6 +1915,7 @@ export default function Viewer3D({
         meshToModelRef.current.delete(mesh);
       }
     }
+    modelFootprintRef.current.delete(modelEntry.mesh);
     modelEntry.mesh.dispose();
     setPlacedModels((prev) => prev.filter((m) => m !== modelEntry));
     showToast(`Removed ${modelEntry.name}`);
@@ -1924,9 +1987,23 @@ export default function Viewer3D({
           yawAngleRef.current.set(root, newYaw);
           root.rotation.y = newYaw;
 
+          const footprint = modelFootprintRef.current.get(root);
+          const resolved = pushOutOfWalls(
+            root.position.x,
+            root.position.z,
+            footprint,
+            newYaw,
+            wallCollidersRef.current,
+            roomBoundsRef.current,
+          );
+          root.position.x = resolved.x;
+          root.position.z = resolved.z;
+
           const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
           if (mapping) {
             mapping.entry.rotation = [0, newYaw, 0];
+            mapping.entry.position[0] = root.position.x - bounds.cx;
+            mapping.entry.position[2] = root.position.z - bounds.cz;
           }
         }
       }
@@ -1954,7 +2031,7 @@ export default function Viewer3D({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [removePlacedModel]);
+  }, [removePlacedModel, bounds]);
 
   // Main 3D Babylon.js Scene Initialization (Always full walls at 2.7m ceiling height with balanced lighting)
   useEffect(() => {
@@ -2210,8 +2287,23 @@ export default function Viewer3D({
       const deltaX = hitPoint.x - dragOffsetRef.current.x;
       const deltaZ = hitPoint.z - dragOffsetRef.current.z;
 
-      mesh.position.x = dragStartPosRef.current.x + deltaX;
-      mesh.position.z = dragStartPosRef.current.z + deltaZ;
+      const targetX = dragStartPosRef.current.x + deltaX;
+      const targetZ = dragStartPosRef.current.z + deltaZ;
+      const footprint = modelFootprintRef.current.get(mesh);
+      const yaw = yawAngleRef.current.get(mesh) ?? mesh.rotation.y ?? 0;
+      const resolved = moveWithWallCollision(
+        mesh.position.x,
+        mesh.position.z,
+        targetX,
+        targetZ,
+        footprint,
+        yaw,
+        wallCollidersRef.current,
+        roomBoundsRef.current,
+      );
+
+      mesh.position.x = resolved.x;
+      mesh.position.z = resolved.z;
 
       const mapping = [...meshToModelRef.current.values()].find((m) => m.root === mesh);
       if (mapping) {
