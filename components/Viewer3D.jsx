@@ -606,101 +606,6 @@ function createWindowAssemblies(windows, opts, scene) {
   return meshes;
 }
 
-function createBathroomFixtures(fixtures, opts, scene) {
-  if (!fixtures || fixtures.length === 0) return [];
-  const { scale } = opts;
-
-  const ceramicMat = new PBRMaterial("ceramicMat", scene);
-  ceramicMat.albedoColor = new Color3(0.96, 0.96, 0.96);
-  ceramicMat.metallic = 0.05;
-  ceramicMat.roughness = 0.15;
-
-  const chromeMat = new PBRMaterial("chromeMat", scene);
-  chromeMat.albedoColor = new Color3(0.85, 0.85, 0.85);
-  chromeMat.metallic = 0.95;
-  chromeMat.roughness = 0.1;
-
-  const glassMat = new PBRMaterial("showerGlassMat", scene);
-  glassMat.albedoColor = new Color3(0.7, 0.9, 1.0);
-  glassMat.alpha = 0.35;
-  glassMat.metallic = 0.05;
-  glassMat.roughness = 0.05;
-
-  const fixtureMeshes = [];
-  fixtures.forEach((f, i) => {
-    const canvasPt = f.canvas_center || f.center;
-    if (!canvasPt) return;
-    const cx = canvasPt[0] * scale;
-    const cz = canvasPt[1] * scale;
-
-    if (f.label === "toilet") {
-      const base = MeshBuilder.CreateCylinder(
-        `toilet_bowl_${i}`,
-        { diameterTop: 0.30, diameterBottom: 0.22, height: 0.40 },
-        scene,
-      );
-      base.position.set(cx, 0.20, cz);
-      base.material = ceramicMat;
-      base.castShadow = true;
-      base.receiveShadow = true;
-
-      const cistern = MeshBuilder.CreateBox(
-        `toilet_tank_${i}`,
-        { width: 0.34, depth: 0.18, height: 0.38 },
-        scene,
-      );
-      cistern.position.set(cx, 0.48, cz - 0.12);
-      cistern.material = ceramicMat;
-      cistern.castShadow = true;
-      cistern.receiveShadow = true;
-      fixtureMeshes.push(base, cistern);
-    } else if (f.label === "sink") {
-      const vanity = MeshBuilder.CreateBox(
-        `vanity_${i}`,
-        { width: 0.42, depth: 0.35, height: 0.78 },
-        scene,
-      );
-      vanity.position.set(cx, 0.39, cz);
-      vanity.material = ceramicMat;
-      vanity.castShadow = true;
-      vanity.receiveShadow = true;
-
-      const tap = MeshBuilder.CreateCylinder(
-        `tap_${i}`,
-        { diameter: 0.03, height: 0.14 },
-        scene,
-      );
-      tap.position.set(cx, 0.82, cz - 0.10);
-      tap.material = chromeMat;
-      tap.castShadow = true;
-      fixtureMeshes.push(vanity, tap);
-    } else if (f.label === "shower") {
-      const tray = MeshBuilder.CreateBox(
-        `shower_tray_${i}`,
-        { width: 0.80, depth: 0.80, height: 0.06 },
-        scene,
-      );
-      tray.position.set(cx, 0.03, cz);
-      tray.material = ceramicMat;
-      tray.receiveShadow = true;
-
-      // Realistic modern low-profile shower glass screen (height: 1.25m, width: 0.75m)
-      const glass = MeshBuilder.CreateBox(
-        `shower_glass_${i}`,
-        { width: 0.75, depth: 0.02, height: 1.25 },
-        scene,
-      );
-      // Bottom of glass rests neatly on the tray: y = 0.06 + 1.25/2 = 0.685m
-      glass.position.set(cx, 0.685, cz + 0.35);
-      glass.material = glassMat;
-      glass.castShadow = true;
-      fixtureMeshes.push(tray, glass);
-    }
-  });
-
-  return fixtureMeshes;
-}
-
 function cutWindowOpenings(windows, wallMeshes, opts, scene) {
   const { scale, wallThickness, sillHeight, windowHeight, wallHeight } = opts;
   const remainingMeshes = [...wallMeshes];
@@ -2220,9 +2125,6 @@ export default function Viewer3D({
     // Place sleek 3D window frames & translucent glass panes inside all window cutouts
     const windowMeshes = createWindowAssemblies(windows, winOpts, scene);
 
-    // 7. Procedural Bathroom Fixtures
-    const bathMeshes = createBathroomFixtures(fixtures, { scale: 1 / pixelsPerMeter }, scene);
-
     edgesRef.current = edges;
     windowsRef.current = windows;
     doorsRef.current = doors;
@@ -2371,7 +2273,6 @@ export default function Viewer3D({
       canvasRef.current?.ownerDocument?.removeEventListener("pointerup", onPointerUp);
       wallMeshesRef.current.forEach((m) => m.dispose());
       windowMeshes.forEach((m) => m.dispose());
-      bathMeshes.forEach((m) => m.dispose());
       floor.dispose();
       floorSlab.dispose();
       slabMat.dispose();

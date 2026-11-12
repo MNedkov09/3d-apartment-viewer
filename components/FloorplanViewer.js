@@ -45,7 +45,6 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [showFurniture, setShowFurniture] = useState(true);
   const [showDoors, setShowDoors] = useState(true);
   const [showWindows, setShowWindows] = useState(true);
-  const [showFixtures, setShowFixtures] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState("2d");
   const [pixelsPerMeter, setPixelsPerMeter] = useState(22);
@@ -115,34 +114,11 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         }
       }
 
-      // 4. Bath Fixtures (Violet / Indigo)
-      if (showFixtures && fixList && fixList.length > 0) {
+      // 4. Unified Furniture & Fixtures (Emerald bounding boxes with labels)
+      const allFurn = [...(furnList || []), ...(fixList || [])];
+      if (showFurniture && allFurn.length > 0) {
         ctx.lineWidth = 1.5;
-        for (const fx of fixList) {
-          const bx = fx.canvas_box || [0, 0, 0, 0];
-          const bw = bx[2] - bx[0];
-          const bh = bx[3] - bx[1];
-          if (bw <= 0 || bh <= 0) continue;
-
-          ctx.strokeStyle = "rgba(139, 92, 246, 0.95)";
-          ctx.fillStyle = "rgba(139, 92, 246, 0.16)";
-          ctx.fillRect(bx[0], bx[1], bw, bh);
-          ctx.strokeRect(bx[0], bx[1], bw, bh);
-
-          const label = (fx.label || "fixture").replace(/_/g, " ").toUpperCase();
-          const textW = label.length * 6.2 + 8;
-          ctx.fillStyle = "rgba(139, 92, 246, 0.95)";
-          ctx.fillRect(bx[0], Math.max(0, bx[1] - 14), textW, 14);
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 9px monospace";
-          ctx.fillText(label, bx[0] + 4, Math.max(10, bx[1] - 3));
-        }
-      }
-
-      // 5. Furniture (Emerald bounding boxes with labels)
-      if (showFurniture && furnList && furnList.length > 0) {
-        ctx.lineWidth = 1.5;
-        for (const f of furnList) {
+        for (const f of allFurn) {
           const bx = f.canvas_box || [0, 0, 0, 0];
           const bw = bx[2] - bx[0];
           const bh = bx[3] - bx[1];
@@ -163,7 +139,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         }
       }
     },
-    [showWalls, showWindows, showDoors, showFixtures, showFurniture],
+    [showWalls, showWindows, showDoors, showFurniture],
   );
 
   // Re-draw when layer visibility toggles change
@@ -171,7 +147,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
     if (imgRef.current && edges && view === "2d") {
       drawOverlay(imgRef.current, edges, windows, doors, furniture, fixtures);
     }
-  }, [showWalls, showWindows, showDoors, showFixtures, showFurniture, edges, windows, doors, furniture, fixtures, view, drawOverlay]);
+  }, [showWalls, showWindows, showDoors, showFurniture, edges, windows, doors, furniture, fixtures, view, drawOverlay]);
 
   const runDetection = useCallback(
     async (img) => {
@@ -365,14 +341,6 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           <label style={{ fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
             <input
               type="checkbox"
-              checked={showFixtures}
-              onChange={(e) => setShowFixtures(e.target.checked)}
-            />
-            <span style={{ color: "#8b5cf6", fontWeight: 600 }}>Bath Fixtures</span>
-          </label>
-          <label style={{ fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-            <input
-              type="checkbox"
               checked={showFurniture}
               onChange={(e) => setShowFurniture(e.target.checked)}
             />
@@ -388,7 +356,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
               color: "var(--ink-muted, #555)",
             }}
           >
-            {stats.wall_edges} walls · {stats.doors} doors · {stats.windows} windows · {stats.fixtures || 0} fixtures · {stats.furniture} furniture
+            {stats.wall_edges} walls · {stats.doors} doors · {stats.windows} windows · {(stats.furniture || 0) + (stats.fixtures || 0)} furniture
           </div>
         )}
       </div>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#e5e7eb"/>
+  <!-- Shadow -->
+  <ellipse cx="128" cy="206" rx="54" ry="18" fill="#cbd5e1"/>
+  <!-- Pedestal -->
+  <path d="M98 142 L158 142 L146 198 C146 205 110 205 110 198 Z" fill="#f8fafc" stroke="#94a3b8" stroke-width="3"/>
+  <!-- Tank / Cistern -->
+  <rect x="84" y="48" width="88" height="72" rx="10" fill="#ffffff" stroke="#64748b" stroke-width="3"/>
+  <rect x="80" y="42" width="96" height="12" rx="5" fill="#f1f5f9" stroke="#64748b" stroke-width="3"/>
+  <ellipse cx="128" cy="48" rx="10" ry="3" fill="#94a3b8"/>
+  <!-- Bowl & Lid -->
+  <ellipse cx="128" cy="144" rx="48" ry="26" fill="#ffffff" stroke="#64748b" stroke-width="3"/>
+  <ellipse cx="128" cy="138" rx="42" ry="20" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2.5"/>
+</svg>

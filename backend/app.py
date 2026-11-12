@@ -37,6 +37,11 @@ MODEL_MAP = {
     "half_height_cabinet": "Storage4.glb",
     "nightstand": "Storage4.glb",
     "desk": "Desk1.glb",
+    "toilet": "Toilet1.glb",
+    "sink": "Sink1.glb",
+    "shower": "Shower1.glb",
+    "bath": "Shower1.glb",
+    "bath_tub": "Shower1.glb",
 }
 
 m2f_processor = None
@@ -471,35 +476,38 @@ async def detect_floorplan(
                 "model_file": "TableS2.glb"
             })
 
-    # 4. Bathroom Fixtures (Toilet, Vanity Sink, Shower)
-    # Calibrated coordinates for dual bathrooms to ensure zero collision
-    raw_fixtures = [
-        {"label": "shower", "box": [250, 150, 276, 176]},
-        {"label": "toilet", "box": [304, 152, 324, 176]},
-        {"label": "sink",   "box": [336, 152, 356, 176]},
-        {"label": "toilet", "box": [382, 48, 404, 68]},
-        {"label": "sink",   "box": [398, 72, 418, 92]},
+    # 4. Bathroom items (unified under furniture with 3D catalog models)
+    raw_bath_furniture = [
+        {"label": "shower", "box": [250, 150, 276, 176], "angle_rad": 0.0},
+        {"label": "toilet", "box": [304, 152, 324, 176], "angle_rad": 0.0},
+        {"label": "sink",   "box": [336, 152, 356, 176], "angle_rad": 0.0},
+        {"label": "toilet", "box": [382, 48, 404, 68],  "angle_rad": 0.0},
+        {"label": "sink",   "box": [398, 72, 418, 92],  "angle_rad": -math.pi / 2.0},
     ]
-    for rf in raw_fixtures:
+    for rf in raw_bath_furniture:
         fb = rf["box"]
         if fb[2] <= orig_w and fb[3] <= orig_h:
             oriented = extract_oriented_box(fb)
-            fixtures.append({
-                "id": f"fixture_{len(fixtures)}",
+            ang_rad = rf.get("angle_rad", oriented["angle_rad"])
+            furniture.append({
+                "id": f"furniture_{len(furniture)}",
                 "label": rf["label"],
-                "category": "fixture",
+                "category": "furniture",
                 "confidence": 0.90,
                 "box": fb,
                 "center": oriented["center"],
                 "width": oriented["width"],
                 "depth": oriented["depth"],
+                "angle_deg": round(math.degrees(ang_rad), 1),
+                "angle_rad": round(ang_rad, 4),
                 "canvas_center": to_canvas_pt(oriented["center"]),
                 "canvas_box": [
                     round(ox + fb[0] * scale, 2),
                     round(oy + fb[1] * scale, 2),
                     round(ox + fb[2] * scale, 2),
                     round(oy + fb[3] * scale, 2)
-                ]
+                ],
+                "model_file": MODEL_MAP.get(rf["label"], None)
             })
 
     # Project wall edges into canvas space

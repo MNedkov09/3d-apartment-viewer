@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#e5e7eb"/>
+  <!-- Shadow -->
+  <ellipse cx="128" cy="212" rx="68" ry="14" fill="#cbd5e1"/>
+  <!-- Cabinet legs -->
+  <rect x="70" y="182" width="10" height="26" rx="2" fill="#334155"/>
+  <rect x="176" y="182" width="10" height="26" rx="2" fill="#334155"/>
+  <!-- Oak Vanity Cabinet -->
+  <rect x="64" y="96" width="128" height="90" rx="6" fill="#9a6b43" stroke="#5c3d24" stroke-width="3"/>
+  <rect x="74" y="106" width="108" height="32" rx="3" fill="#ab7a50" stroke="#7c5331" stroke-width="2"/>
+  <rect x="74" y="144" width="108" height="34" rx="3" fill="#ab7a50" stroke="#7c5331" stroke-width="2"/>
+  <!-- Handles -->
+  <rect x="110" y="119" width="36" height="5" rx="2" fill="#334155"/>
+  <rect x="110" y="158" width="36" height="5" rx="2" fill="#334155"/>
+  <!-- Ceramic Countertop & Basin -->
+  <rect x="58" y="84" width="140" height="14" rx="4" fill="#f8fafc" stroke="#64748b" stroke-width="3"/>
+  <path d="M84 68 L172 68 L164 84 L92 84 Z" fill="#ffffff" stroke="#64748b" stroke-width="3"/>
+  <!-- Chrome Faucet -->
+  <path d="M128 84 L128 52 C128 42 142 42 142 52 L142 58" fill="none" stroke="#64748b" stroke-width="7" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#e5e7eb"/>
+  <!-- Shadow -->
+  <polygon points="48,196 128,224 208,196 128,168" fill="#cbd5e1"/>
+  <!-- Shower Tray -->
+  <polygon points="54,188 128,214 202,188 128,162" fill="#f8fafc" stroke="#64748b" stroke-width="3"/>
+  <!-- Back & Side Glass Enclosure -->
+  <polygon points="56,56 128,36 128,162 56,184" fill="#bae6fd" fill-opacity="0.45" stroke="#334155" stroke-width="4"/>
+  <polygon points="128,36 200,56 200,184 128,162" fill="#7dd3fc" fill-opacity="0.35" stroke="#334155" stroke-width="4"/>
+  <!-- Chrome Rain Shower -->
+  <line x1="94" y1="68" x2="94" y2="148" stroke="#64748b" stroke-width="4"/>
+  <line x1="94" y1="68" x2="124" y2="68" stroke="#64748b" stroke-width="4"/>
+  <ellipse cx="126" cy="74" rx="14" ry="5" fill="#94a3b8" stroke="#475569" stroke-width="2"/>
+  <!-- Front Frame Post -->
+  <line x1="128" y1="36" x2="128" y2="214" stroke="#1e293b" stroke-width="5"/>
+</svg>
