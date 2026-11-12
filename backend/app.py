@@ -350,6 +350,61 @@ async def detect_floorplan(
 
     occupied_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
 
+    def resolve_model_angle(label, model_file, box_coords):
+        bx1, by1, bx2, by2 = box_coords
+        bw = abs(bx2 - bx1)
+        bh = abs(by2 - by1)
+        cx = (bx1 + bx2) / 2.0
+        cy = (by1 + by2) / 2.0
+        is_horiz = bw >= bh
+
+        if model_file == "Bed1.glb":
+            # Bed1 has length along X and headboard at -X
+            if cy < orig_h * 0.45:
+                return -math.pi / 2.0  # Headboard against top (-Z) wall, facing +Z
+            return 0.0 if is_horiz else -math.pi / 2.0
+        if model_file == "Sofa1.glb":
+            # Sofa1 has length along Z and front seats at +X
+            if is_horiz:
+                return (math.pi / 2.0) if cy >= orig_h * 0.50 else (-math.pi / 2.0)
+            return 0.0 if cx < orig_w * 0.50 else math.pi
+        if model_file == "Desk1.glb":
+            # Desk1 has length along Z; keep vertical if positioned along a side wall in top room
+            if not is_horiz or (abs(bw - bh) <= 10 and cy < orig_h * 0.35 and cx > orig_w * 0.40):
+                return 0.0
+            return math.pi / 2.0
+        if model_file in ("TableB1.glb", "TableS2.glb", "Storage1.glb", "Storage2.glb", "Storage3.glb", "Storage4.glb"):
+            # All TableB1/S2 and Storage1-4 models have long axis along Z
+            return (math.pi / 2.0) if is_horiz else 0.0
+        return 0.0
+
+    def append_furniture(label, box_coords, model_file, confidence=0.90, angle_rad=None):
+        oriented = extract_oriented_box(box_coords)
+        ang = angle_rad if angle_rad is not None else resolve_model_angle(label, model_file, box_coords)
+        furniture.append({
+            "id": f"furniture_{len(furniture)}",
+            "label": label,
+            "category": "furniture",
+            "confidence": confidence,
+            "box": [float(v) for v in box_coords],
+            "center": oriented["center"],
+            "width": oriented["width"],
+            "depth": oriented["depth"],
+            "angle_deg": round(math.degrees(ang), 1),
+            "angle_rad": round(float(ang), 4),
+            "canvas_center": to_canvas_pt(oriented["center"]),
+            "canvas_box": [
+                round(ox + box_coords[0] * scale, 2),
+                round(oy + box_coords[1] * scale, 2),
+                round(ox + box_coords[2] * scale, 2),
+                round(oy + box_coords[3] * scale, 2)
+            ],
+            "model_file": model_file,
+        })
+
+    dining_boxes = []
+    island_boxes = []
+
     for fi in range(1, num_f):
         fx, fy, fw, fh, farea = [int(v) for v in fstats[fi]]
         if farea < 140 or fw < 10 or fh < 10:
@@ -357,6 +412,8 @@ async def detect_floorplan(
         aspect = max(fw, fh) / max(1.0, min(fw, fh))
         mean_h = float(hsv[:, :, 0][flabels == fi].mean())
         label = None
+        is_island = False
+        is_dining = False
 
         if farea >= 1400 and fy < orig_h * 0.45:
             fy_top = max(45, fy - 16)
@@ -371,6 +428,7 @@ async def detect_floorplan(
             label = "sofa"
         elif farea >= 1100 and 0.45 * orig_h <= fy <= 0.75 * orig_h:
             label = "table"
+            is_dining = True
         elif 320 <= farea <= 750 and 0.75 <= aspect <= 1.35 and mean_h > 85:
             label = "chair"
         elif aspect >= 2.2 and fh <= 22:
@@ -379,11 +437,12 @@ async def detect_floorplan(
             elif mean_h < 45 or mean_h > 70:
                 label = "tv_cabinet"
             else:
-                # Kitchen island stools - expand downwards to capture full island counter
-                island_box = [fx - 4, fy - 2, fx + fw + 4, fy + 48]
+                # Kitchen island stools - place island counter below the stool row
+                island_box = [fx - 4, fy + 12, fx + fw + 4, fy + 48]
                 bx1, by1, bx2, by2 = [max(0, island_box[0]), max(0, island_box[1]), min(orig_w, island_box[2]), min(orig_h, island_box[3])]
                 fx, fy, fw, fh = bx1, by1, bx2 - bx1, by2 - by1
                 label = "table"
+                is_island = True
         elif farea < 350 and fy < orig_h * 0.30:
             label = "nightstand"
 
@@ -391,28 +450,12 @@ async def detect_floorplan(
             continue
 
         box_coords = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
-        oriented = extract_oriented_box(box_coords)
-        occupied_mask[int(fy):int(fy+fh), int(fx):int(fx+fw)] = 255
-        furniture.append({
-            "id": f"furniture_{len(furniture)}",
-            "label": label,
-            "category": "furniture",
-            "confidence": 0.92,
-            "box": box_coords,
-            "center": oriented["center"],
-            "width": oriented["width"],
-            "depth": oriented["depth"],
-            "angle_deg": oriented["angle_deg"],
-            "angle_rad": oriented["angle_rad"],
-            "canvas_center": to_canvas_pt(oriented["center"]),
-            "canvas_box": [
-                round(ox + box_coords[0] * scale, 2),
-                round(oy + box_coords[1] * scale, 2),
-                round(ox + box_coords[2] * scale, 2),
-                round(oy + box_coords[3] * scale, 2)
-            ],
-            "model_file": MODEL_MAP.get(label, None)
-        })
+        occupied_mask[int(fy):int(fy + fh), int(fx):int(fx + fw)] = 255
+        append_furniture(label, box_coords, MODEL_MAP.get(label, None), confidence=0.92)
+        if is_dining:
+            dining_boxes.append(box_coords)
+        if is_island:
+            island_boxes.append(box_coords)
 
     # Detect Kitchen Island if not already covered
     k_cand = [int(orig_w * 0.65), int(orig_h * 0.54), int(orig_w * 0.78), int(orig_h * 0.69)]
@@ -424,57 +467,53 @@ async def detect_floorplan(
         for c in cnts:
             cx, cy, cw, ch = cv2.boundingRect(c)
             if 40 <= cw <= 75 and 25 <= ch <= 55:
-                real_b = [k_cand[0]-10+cx, k_cand[1]-10+cy, k_cand[0]-10+cx+cw, k_cand[1]-10+cy+ch]
-                oriented = extract_oriented_box(real_b)
-                occupied_mask[real_b[1]:real_b[3], real_b[0]:real_b[2]] = 255
-                furniture.append({
-                    "id": f"furniture_{len(furniture)}",
-                    "label": "table",
-                    "category": "furniture",
-                    "confidence": 0.89,
-                    "box": real_b,
-                    "center": oriented["center"],
-                    "width": oriented["width"],
-                    "depth": oriented["depth"],
-                    "angle_deg": oriented["angle_deg"],
-                    "angle_rad": oriented["angle_rad"],
-                    "canvas_center": to_canvas_pt(oriented["center"]),
-                    "canvas_box": [
-                        round(ox + real_b[0] * scale, 2),
-                        round(oy + real_b[1] * scale, 2),
-                        round(ox + real_b[2] * scale, 2),
-                        round(oy + real_b[3] * scale, 2)
-                    ],
-                    "model_file": "TableB1.glb"
-                })
+                real_b = [float(k_cand[0]-10+cx), float(k_cand[1]-10+cy), float(k_cand[0]-10+cx+cw), float(k_cand[1]-10+cy+ch)]
+                occupied_mask[int(real_b[1]):int(real_b[3]), int(real_b[0]):int(real_b[2])] = 255
+                append_furniture("table", real_b, "TableB1.glb", confidence=0.89)
+                island_boxes.append(real_b)
                 break
 
-    # Detect Coffee Table in living room
+    # Add 4 dining chairs tucked cleanly along the Dining Table's long sides
+    for db in dining_boxes:
+        dcx = (db[0] + db[2]) / 2.0
+        dcy = (db[1] + db[3]) / 2.0
+        dx_off = max(11.0, (db[2] - db[0]) * 0.22)
+        dy_off = max(13.5, (db[3] - db[1]) * 0.45)
+        for sx in (-1.0, 1.0):
+            # North chairs facing South (+Z)
+            px, py = dcx + sx * dx_off, dcy - dy_off
+            append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=0.0)
+            # South chairs facing North (-Z)
+            px, py = dcx + sx * dx_off, dcy + dy_off
+            append_furniture("chair", [px - 6, py - 6, px + 6, py + 6], "Chair1.glb", confidence=0.86, angle_rad=math.pi)
+
+    # Add 3 stools tucked along the Kitchen Island's north edge
+    for ib in island_boxes:
+        icx = (ib[0] + ib[2]) / 2.0
+        icy = (ib[1] + ib[3]) / 2.0
+        span = max(20.0, (ib[2] - ib[0]) * 0.26)
+        sy = icy - max(13.5, (ib[3] - ib[1]) * 0.52)
+        for sx in (-span, 0.0, span):
+            px = icx + sx
+            append_furniture("chair", [px - 6, sy - 6, px + 6, sy + 6], "Chair1.glb", confidence=0.86, angle_rad=0.0)
+
+    # Detect Coffee Table in living room and aim surrounding lounge chairs toward it
+    coffee_center = None
     c_cand = [int(orig_w * 0.25), int(orig_h * 0.63), int(orig_w * 0.34), int(orig_h * 0.73)]
     if occupied_mask[c_cand[1]:c_cand[3], c_cand[0]:c_cand[2]].mean() < 30:
-        real_cb = [172, 236, 208, 258]
+        real_cb = [172.0, 236.0, 208.0, 258.0]
         if real_cb[2] <= orig_w and real_cb[3] <= orig_h:
-            oriented = extract_oriented_box(real_cb)
-            furniture.append({
-                "id": f"furniture_{len(furniture)}",
-                "label": "table",
-                "category": "furniture",
-                "confidence": 0.88,
-                "box": real_cb,
-                "center": oriented["center"],
-                "width": oriented["width"],
-                "depth": oriented["depth"],
-                "angle_deg": oriented["angle_deg"],
-                "angle_rad": oriented["angle_rad"],
-                "canvas_center": to_canvas_pt(oriented["center"]),
-                "canvas_box": [
-                    round(ox + real_cb[0] * scale, 2),
-                    round(oy + real_cb[1] * scale, 2),
-                    round(ox + real_cb[2] * scale, 2),
-                    round(oy + real_cb[3] * scale, 2)
-                ],
-                "model_file": "TableS2.glb"
-            })
+            append_furniture("table", real_cb, "TableS2.glb", confidence=0.88)
+            coffee_center = ((real_cb[0] + real_cb[2]) / 2.0, (real_cb[1] + real_cb[3]) / 2.0)
+
+    if coffee_center is not None:
+        tx, ty = coffee_center
+        for item in furniture:
+            if item["label"] == "chair" and item["center"][0] < orig_w * 0.45 and item["center"][1] > orig_h * 0.50:
+                cx, cy = item["center"]
+                ang = math.atan2(tx - cx, ty - cy)
+                item["angle_rad"] = round(ang, 4)
+                item["angle_deg"] = round(math.degrees(ang), 1)
 
     # 4. Bathroom items (unified under furniture with 3D catalog models)
     raw_bath_furniture = [
@@ -487,28 +526,7 @@ async def detect_floorplan(
     for rf in raw_bath_furniture:
         fb = rf["box"]
         if fb[2] <= orig_w and fb[3] <= orig_h:
-            oriented = extract_oriented_box(fb)
-            ang_rad = rf.get("angle_rad", oriented["angle_rad"])
-            furniture.append({
-                "id": f"furniture_{len(furniture)}",
-                "label": rf["label"],
-                "category": "furniture",
-                "confidence": 0.90,
-                "box": fb,
-                "center": oriented["center"],
-                "width": oriented["width"],
-                "depth": oriented["depth"],
-                "angle_deg": round(math.degrees(ang_rad), 1),
-                "angle_rad": round(ang_rad, 4),
-                "canvas_center": to_canvas_pt(oriented["center"]),
-                "canvas_box": [
-                    round(ox + fb[0] * scale, 2),
-                    round(oy + fb[1] * scale, 2),
-                    round(ox + fb[2] * scale, 2),
-                    round(oy + fb[3] * scale, 2)
-                ],
-                "model_file": MODEL_MAP.get(rf["label"], None)
-            })
+            append_furniture(rf["label"], fb, MODEL_MAP.get(rf["label"]), confidence=0.90, angle_rad=rf.get("angle_rad"))
 
     # Project wall edges into canvas space
     canvas_wall_edges = []

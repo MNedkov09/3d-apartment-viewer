@@ -806,6 +806,7 @@ function exportSceneJSON(
       url: p.url,
       position: [p.position[0], p.position[1] ?? 0, p.position[2]],
       rotation,
+      scaling: p.scaling || [1, 1, 1],
     };
   });
 
@@ -1737,7 +1738,7 @@ export default function Viewer3D({
 
   // Robust model importer: binds imported meshes to a dedicated TransformNode
   const loadSingleModel = useCallback(
-    async (url, spawnPoint, rotationY = 0, name = "Furniture") => {
+    async (url, spawnPoint, rotationY = 0, name = "Furniture", targetScaling = null) => {
       const scene = sceneRef.current;
       if (!scene) return null;
 
@@ -1757,9 +1758,14 @@ export default function Viewer3D({
           node.parent = modelRoot;
         });
 
-        // Compute full hierarchy bounds relative to unmoved modelRoot (handles GLTF __root__ Z-flip)
+        const sx = targetScaling?.[0] ?? 1;
+        const sy = targetScaling?.[1] ?? 1;
+        const sz = targetScaling?.[2] ?? 1;
+
+        // Compute full hierarchy bounds relative to scaled, unrotated modelRoot
         modelRoot.position.set(0, 0, 0);
         modelRoot.rotation.set(0, 0, 0);
+        modelRoot.scaling.set(sx, sy, sz);
         modelRoot.computeWorldMatrix(true);
 
         let minLocalY = Infinity;
@@ -1813,7 +1819,7 @@ export default function Viewer3D({
           name,
           position: [resolvedPos.x - bounds.cx, yOffset, resolvedPos.z - bounds.cz],
           rotation: [0, rotationY, 0],
-          scaling: [1, 1, 1],
+          scaling: [sx, sy, sz],
           url,
           mesh: modelRoot,
         };
@@ -1870,6 +1876,7 @@ export default function Viewer3D({
     setIsAutoFurnishing(true);
     const scale = 1 / pixelsPerMeter;
 
+    const roomMul = Math.max(1.0, Math.min(1.32, 28 / pixelsPerMeter));
     const added = [];
     for (const f of furniture) {
       if (!f.model_file) continue;
@@ -1882,7 +1889,23 @@ export default function Viewer3D({
       const spawnPoint = new Vector3(worldX, 0, worldZ);
       const angle = f.angle_rad || 0;
 
-      const entry = await loadSingleModel(url, spawnPoint, angle, name);
+      const boxW = f.canvas_box ? (f.canvas_box[2] - f.canvas_box[0]) * scale : 0;
+      let targetScaling = [1, 1, 1];
+      if (f.model_file === "Bed1.glb") {
+        // Widen double beds (e.g. Master Bedroom) while keeping single beds proportional
+        const widScale = boxW > 2.2 ? 1.85 : 1.12;
+        targetScaling = [1.15, 1.05, widScale];
+      } else if (f.model_file === "TableS2.glb") {
+        targetScaling = [roomMul * 1.1, 1.08, roomMul * 1.1];
+      } else if (f.model_file === "TableB1.glb" || f.model_file === "Sofa1.glb" || f.model_file === "Desk1.glb") {
+        targetScaling = [roomMul, 1.08, roomMul];
+      } else if (f.model_file === "Chair1.glb") {
+        targetScaling = [1.18, 1.06, 1.18];
+      } else if (f.model_file.startsWith("Storage")) {
+        targetScaling = [roomMul, 1.08, roomMul];
+      }
+
+      const entry = await loadSingleModel(url, spawnPoint, angle, name, targetScaling);
       if (entry) {
         added.push(entry);
       }
@@ -1957,7 +1980,7 @@ export default function Viewer3D({
           const worldX = m.position[0] + bounds.cx;
           const worldZ = m.position[2] + bounds.cz;
           const angle = Array.isArray(m.rotation) ? m.rotation[1] : 0;
-          const entry = await loadSingleModel(m.url, new Vector3(worldX, 0, worldZ), angle, m.name);
+          const entry = await loadSingleModel(m.url, new Vector3(worldX, 0, worldZ), angle, m.name, m.scaling || null);
           if (entry) {
             setPlacedModels((prev) => [...prev, entry]);
           }
