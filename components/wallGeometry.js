@@ -402,6 +402,29 @@ function getRotatedFootprintBounds(rootX, rootZ, footprint, yaw) {
 }
 
 /**
+ * Return true if the rotated model footprint at (x, z) overlaps any wall collider.
+ */
+export function hasWallCollision(x, z, footprint, yaw, colliders, clearance = 0.005) {
+  if (!colliders || colliders.length === 0) return false;
+  const b = getRotatedFootprintBounds(x, z, footprint, yaw);
+  const minX = b.minX;
+  const maxX = b.maxX;
+  const minZ = b.minZ;
+  const maxZ = b.maxZ;
+  for (const wall of colliders) {
+    if (
+      maxX > wall.minX - clearance &&
+      minX < wall.maxX + clearance &&
+      maxZ > wall.minZ - clearance &&
+      minZ < wall.maxZ + clearance
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Push a furniture root position (x, z) cleanly outside any colliding wall colliders
  * and keep it inside the apartment perimeter bounds.
  */
@@ -410,7 +433,7 @@ export function pushOutOfWalls(x, z, footprint, yaw, colliders, roomBounds, clea
   let rz = z;
   const b = getRotatedFootprintBounds(rx, rz, footprint, yaw);
 
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     let moved = false;
     if (colliders && colliders.length > 0) {
       for (const wall of colliders) {

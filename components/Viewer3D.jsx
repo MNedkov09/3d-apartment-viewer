@@ -26,7 +26,7 @@ import {
   applyWorldSpaceWallUVs,
   buildWallColliders,
   pushOutOfWalls,
-  moveWithWallCollision,
+  hasWallCollision,
 } from "./wallGeometry";
 
 // Register the GLTF loader once at module load time
@@ -2021,17 +2021,19 @@ export default function Viewer3D({
           yawAngleRef.current.set(root, newYaw);
           root.rotation.y = newYaw;
 
-          const footprint = modelFootprintRef.current.get(root);
-          const resolved = pushOutOfWalls(
-            root.position.x,
-            root.position.z,
-            footprint,
-            newYaw,
-            wallCollidersRef.current,
-            roomBoundsRef.current,
-          );
-          root.position.x = resolved.x;
-          root.position.z = resolved.z;
+          if (!isDraggingRef.current) {
+            const footprint = modelFootprintRef.current.get(root);
+            const resolved = pushOutOfWalls(
+              root.position.x,
+              root.position.z,
+              footprint,
+              newYaw,
+              wallCollidersRef.current,
+              roomBoundsRef.current,
+            );
+            root.position.x = resolved.x;
+            root.position.z = resolved.z;
+          }
 
           const mapping = [...meshToModelRef.current.values()].find((m) => m.root === root);
           if (mapping) {
@@ -2327,21 +2329,9 @@ export default function Viewer3D({
 
       const targetX = dragStartPosRef.current.x + deltaX;
       const targetZ = dragStartPosRef.current.z + deltaZ;
-      const footprint = modelFootprintRef.current.get(mesh);
-      const yaw = yawAngleRef.current.get(mesh) ?? mesh.rotation.y ?? 0;
-      const resolved = moveWithWallCollision(
-        mesh.position.x,
-        mesh.position.z,
-        targetX,
-        targetZ,
-        footprint,
-        yaw,
-        wallCollidersRef.current,
-        roomBoundsRef.current,
-      );
 
-      mesh.position.x = resolved.x;
-      mesh.position.z = resolved.z;
+      mesh.position.x = targetX;
+      mesh.position.z = targetZ;
 
       const mapping = [...meshToModelRef.current.values()].find((m) => m.root === mesh);
       if (mapping) {
@@ -2353,6 +2343,34 @@ export default function Viewer3D({
     const onPointerUp = () => {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
+
+      const mesh = draggedMeshRef.current;
+      if (mesh) {
+        const footprint = modelFootprintRef.current.get(mesh);
+        const yaw = yawAngleRef.current.get(mesh) ?? mesh.rotation.y ?? 0;
+        const resolved = pushOutOfWalls(
+          mesh.position.x,
+          mesh.position.z,
+          footprint,
+          yaw,
+          wallCollidersRef.current,
+          roomBoundsRef.current,
+        );
+        if (hasWallCollision(resolved.x, resolved.z, footprint, yaw, wallCollidersRef.current)) {
+          mesh.position.x = dragStartPosRef.current.x;
+          mesh.position.z = dragStartPosRef.current.z;
+          showToast("Model cannot be placed inside a wall");
+        } else {
+          mesh.position.x = resolved.x;
+          mesh.position.z = resolved.z;
+        }
+        const mapping = [...meshToModelRef.current.values()].find((m) => m.root === mesh);
+        if (mapping) {
+          mapping.entry.position[0] = mesh.position.x - bounds.cx;
+          mapping.entry.position[2] = mesh.position.z - bounds.cz;
+        }
+      }
+
       cameraRef.current?.attachControl(canvasRef.current, true);
       draggedMeshRef.current = null;
       setDraggedModel(null);
