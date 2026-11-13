@@ -1535,6 +1535,7 @@ export default function Viewer3D({
   doors = [],
   furniture = [],
   fixtures = [],
+  rooms = {},
   pixelsPerMeter = 22,
   wallHeightMeters = 2.5,
   wallThicknessMeters = 0.15,
@@ -1559,6 +1560,8 @@ export default function Viewer3D({
   const edgesRef = useRef(edges);
   const windowsRef = useRef(windows);
   const doorsRef = useRef(doors);
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
   const modelRotationRef = useRef(new Map());
   const yawAngleRef = useRef(new Map());
   const modelFootprintRef = useRef(new Map());
@@ -1680,6 +1683,13 @@ export default function Viewer3D({
         cam.beta = Math.PI / 2.02;
         cam.radius = 0.15;
         cam.target.set(bounds.cx - bounds.w * 0.04, 1.30, bounds.cz + bounds.d * 0.22);
+      } else if (roomsRef.current?.[mode]) {
+        const ppm = Number(pixelsPerMeter) || 22;
+        const [rcx, rcy] = roomsRef.current[mode];
+        cam.alpha = -Math.PI / 2;
+        cam.beta = 0.04;
+        cam.radius = cameraDistance * 0.42;
+        cam.target.set(rcx / ppm, 1.0, rcy / ppm);
       } else if (mode === "living") {
         cam.alpha = -Math.PI / 2;
         cam.beta = 0.04;

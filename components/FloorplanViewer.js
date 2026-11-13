@@ -40,6 +40,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [doors, setDoors] = useState([]);
   const [furniture, setFurniture] = useState([]);
   const [fixtures, setFixtures] = useState([]);
+  const [rooms, setRooms] = useState({});
   const [stats, setStats] = useState(null);
   const [showWalls, setShowWalls] = useState(true);
   const [showFurniture, setShowFurniture] = useState(true);
@@ -198,6 +199,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         const detectedDoors = data.doors || [];
         const detectedFurniture = data.furniture || [];
         const detectedFixtures = data.fixtures || [];
+        const detectedRooms = data.rooms || {};
 
         const resultObj = {
           edges: detectedEdges,
@@ -205,6 +207,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           doors: detectedDoors,
           furniture: detectedFurniture,
           fixtures: detectedFixtures,
+          rooms: detectedRooms,
           stats: data.stats,
         };
         cachedDetectionsRef.current.set(imageSrc, resultObj);
@@ -214,6 +217,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         setDoors(detectedDoors);
         setFurniture(detectedFurniture);
         setFixtures(detectedFixtures);
+        setRooms(detectedRooms);
         setStats(data.stats);
 
         drawOverlay(
@@ -244,6 +248,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
       setDoors(cached.doors);
       setFurniture(cached.furniture);
       setFixtures(cached.fixtures);
+      setRooms(cached.rooms || {});
       setStats(cached.stats);
 
       if (view === "2d") {
@@ -424,6 +429,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           doors={doors}
           furniture={furniture}
           fixtures={fixtures}
+          rooms={rooms}
           pixelsPerMeter={pixelsPerMeter}
           wallHeightMeters={wallHeight}
           wallThicknessMeters={wallThickness}
