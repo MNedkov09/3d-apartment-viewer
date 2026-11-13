@@ -434,7 +434,7 @@ async def detect_floorplan(
         b = [float(v) for v in box.xyxy[0].tolist()]
         if name in ['glass', 'window', 'window regular', 'window full', 'window sauna', 'sliding window'] and bconf >= 0.10:
             raw_windows.append((bconf, b, name))
-        elif name.startswith('door') and bconf >= 0.32:
+        elif name.startswith('door') and bconf >= 0.38:
             raw_doors.append((bconf, b, name))
         elif name == 'panelarea' and bconf >= 0.08:
             panel_areas.append((bconf, b))
@@ -547,14 +547,14 @@ async def detect_floorplan(
             if pw >= ph:
                 py = (py1 + py2) / 2.0
                 for sx1, sy1, sx2, sy2, seg_h in wall_segments:
-                    if seg_h and abs(sy1 - py) <= 6:
+                    if seg_h and abs(sy1 - py) <= 8:
                         py = sy1
                         break
                 door_seg = ([px1, py], [px2, py], max(ph, 6.0))
             else:
                 px = (px1 + px2) / 2.0
                 for sx1, sy1, sx2, sy2, seg_h in wall_segments:
-                    if not seg_h and abs(sx1 - px) <= 6:
+                    if not seg_h and abs(sx1 - px) <= 8:
                         px = sx1
                         break
                 door_seg = ([px, py1], [px, py2], max(pw, 6.0))
@@ -563,20 +563,37 @@ async def detect_floorplan(
             for sx1, sy1, sx2, sy2, seg_h in wall_segments:
                 if seg_h:
                     gap_x = max(0.0, max(bx1 - sx2, sx1 - bx2))
-                    if gap_x <= 32.0:
+                    if gap_x <= 14.0:
                         d = min(abs(sy1 - by1), abs(sy1 - by2), abs(sy1 - (by1 + by2) / 2.0))
                         score = d + gap_x * 0.35
-                        if d <= 16.0 and score < best_score:
+                        if d <= 14.0 and score < best_score:
                             best_score = score
                             door_seg = ([bx1, sy1], [bx2, sy1], 8.0)
                 else:
                     gap_y = max(0.0, max(by1 - sy2, sy1 - by2))
-                    if gap_y <= 32.0:
+                    if gap_y <= 14.0:
                         d = min(abs(sx1 - bx1), abs(sx1 - bx2), abs(sx1 - (bx1 + bx2) / 2.0))
                         score = d + gap_y * 0.35
-                        if d <= 16.0 and score < best_score:
+                        if d <= 14.0 and score < best_score:
                             best_score = score
                             door_seg = ([sx1, by1], [sx1, by2], 8.0)
+
+        # Ensure every door actually connects to at least one wall near its endpoints
+        if door_seg is not None:
+            st_d, en_d, _th_d = door_seg
+            ep_pad = max(10, int(min(orig_w, orig_h) * 0.02))
+            has_wall_anchor = False
+            for ex_d, ey_d in (st_d, en_d):
+                xi, yi = int(round(ex_d)), int(round(ey_d))
+                patch_w = clean_wall_mask[
+                    max(0, yi - ep_pad):min(orig_h, yi + ep_pad + 1),
+                    max(0, xi - ep_pad):min(orig_w, xi + ep_pad + 1),
+                ]
+                if patch_w.size > 0 and np.any(patch_w > 0):
+                    has_wall_anchor = True
+                    break
+            if not has_wall_anchor:
+                door_seg = None
 
         if door_seg is not None:
             accepted_door_boxes.append(b)
