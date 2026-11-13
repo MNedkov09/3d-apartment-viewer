@@ -1,18 +1,4 @@
-import Link from "next/link";
 import HeroActions from "@/components/HeroActions";
-import FloorPlanThumb from "@/components/FloorPlanThumb";
-
-const SAMPLES = [
-  { name: "Studio · Lozenets", area: "38 m²", rooms: "1 room", variant: 0 },
-  { name: "Two-bed · Mladost", area: "74 m²", rooms: "2 rooms", variant: 1 },
-  {
-    name: "Maisonette · Vitosha",
-    area: "121 m²",
-    rooms: "4 rooms",
-    variant: 2,
-  },
-  { name: "Loft · Center", area: "56 m²", rooms: "open plan", variant: 3 },
-];
 
 const STEPS = [
   {
@@ -61,73 +47,6 @@ export default function HomePage() {
             layout the way a person actually moves through it.
           </p>
           <HeroActions />
-        </div>
-      </section>
-
-      {/* Sample gallery */}
-      <section className="container" style={{ padding: "24px 24px 64px" }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "baseline",
-            justifyContent: "space-between",
-            marginBottom: 24,
-            borderBottom: "1px solid var(--line)",
-            paddingBottom: 14,
-          }}
-        >
-          <h2 style={{ fontSize: 24 }}>Sample models</h2>
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              color: "var(--ink-faint)",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-            }}
-          >
-            4 examples
-          </span>
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
-            gap: 18,
-          }}
-        >
-          {SAMPLES.map((s) => (
-            <Link
-              key={s.name}
-              href="/upload"
-              className="card framed"
-              style={{
-                overflow: "hidden",
-                transition: "border-color 0.15s ease",
-              }}
-            >
-              <FloorPlanThumb variant={s.variant} />
-              <div
-                style={{
-                  padding: "14px 16px",
-                  borderTop: "1px solid var(--line)",
-                }}
-              >
-                <div style={{ fontWeight: 500 }}>{s.name}</div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    color: "var(--ink-faint)",
-                    marginTop: 4,
-                  }}
-                >
-                  {s.area} · {s.rooms}
-                </div>
-              </div>
-            </Link>
-          ))}
         </div>
       </section>
 

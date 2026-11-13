@@ -287,7 +287,7 @@ export default function UploadPage() {
                   <input
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="e.g. Mladost 2-bed"
+                    placeholder="e.g. Two-Bedroom Apartment"
                   />
                 </div>
               </div>
