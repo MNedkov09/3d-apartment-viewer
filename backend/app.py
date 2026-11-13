@@ -627,13 +627,24 @@ async def detect_floorplan(
     fixtures = []
     occupied_boxes = []
 
+    COMMON_FURN_LABEL = {
+        "coffee_table": "table",
+        "dining_table": "table",
+        "tv_cabinet": "cabinet",
+        "high_cabinet": "cabinet",
+        "half_height_cabinet": "cabinet",
+        "nightstand": "cabinet",
+        "bath_tub": "shower",
+    }
+
     def append_furniture(label, box_coords, model_file, confidence=0.90, angle_rad=None):
         oriented = extract_oriented_box(box_coords)
         wall_dir = _nearest_wall_dir(box_coords, clean_wall_mask, orig_w, orig_h, model_file=model_file)
         ang = angle_rad if angle_rad is not None else _wall_facing_yaw(model_file, box_coords, wall_dir)
+        display_label = COMMON_FURN_LABEL.get(label, label)
         furniture.append({
             "id": f"furniture_{len(furniture)}",
-            "label": label,
+            "label": display_label,
             "category": "furniture",
             "confidence": confidence,
             "box": [float(v) for v in box_coords],
