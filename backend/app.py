@@ -233,17 +233,20 @@ def _wall_facing_yaw(model_file, box_coords, wall_dir):
     is_horiz = (bx2 - bx1) >= (by2 - by1)
 
     if model_file == "Bed1.glb":
-        # Bed1 headboard sits at local -X
-        return {"N": -math.pi / 2.0, "S": math.pi / 2.0, "W": 0.0, "E": math.pi}.get(
-            wall_dir, 0.0 if is_horiz else -math.pi / 2.0
+        # In Babylon root space (glTF -X -> +X), Bed1 headboard sits at +X and faces -X
+        return {"N": math.pi / 2.0, "S": -math.pi / 2.0, "W": math.pi, "E": 0.0}.get(
+            wall_dir, math.pi if is_horiz else math.pi / 2.0
         )
     if model_file == "Sofa1.glb":
-        # Sofa1 backrest sits at local -X, seats face +X
+        # In Babylon root space (glTF -X -> +X), Sofa1 backrest sits at +X and seats face -X
         if is_horiz:
-            return (math.pi / 2.0) if wall_dir == "S" else (-math.pi / 2.0)
-        return math.pi if wall_dir == "E" else 0.0
+            return (math.pi / 2.0) if wall_dir == "N" else (-math.pi / 2.0)
+        return 0.0 if wall_dir == "E" else math.pi
+    if model_file == "Chair1.glb":
+        # In Babylon root space, Chair1 backrest sits at +Z and seat faces -Z
+        return {"N": math.pi, "S": 0.0, "W": -math.pi / 2.0, "E": math.pi / 2.0}.get(wall_dir, 0.0)
     if model_file in ("Toilet1.glb", "Sink1.glb", "Shower1.glb"):
-        # Bathroom GLBs face +Z at yaw=0
+        # Bathroom GLBs back -Z and face +Z at yaw=0
         return {"N": 0.0, "S": math.pi, "W": math.pi / 2.0, "E": -math.pi / 2.0}.get(wall_dir, 0.0)
     if model_file in ("Desk1.glb", "TableB1.glb", "TableS2.glb", "Storage1.glb", "Storage2.glb", "Storage3.glb", "Storage4.glb"):
         # Long axis aligns along Z at yaw=0 and X at yaw=pi/2
@@ -1091,6 +1094,10 @@ async def detect_floorplan(
             classified_items[idx_m]["label"] = "coffee_table"
             coffee_table_boxes.append(bm)
 
+    for item in classified_items:
+        if item["label"] == "coffee_table" and not any(_boxes_overlap_ratio(item["box"], b) > 0.5 for b in coffee_table_boxes):
+            coffee_table_boxes.append(item["box"])
+
     dining_boxes = []
     for item in classified_items:
         lbl = item["label"]
@@ -1111,10 +1118,10 @@ async def detect_floorplan(
             near_ct = min(coffee_table_boxes, key=lambda ct: math.hypot((ct[0] + ct[2]) / 2.0 - cx_s, (ct[1] + ct[3]) / 2.0 - cy_s))
             tx_ct, ty_ct = (near_ct[0] + near_ct[2]) / 2.0, (near_ct[1] + near_ct[3]) / 2.0
             if math.hypot(tx_ct - cx_s, ty_ct - cy_s) <= door_px * 4.5:
-                ang_override = math.atan2(-(ty_ct - cy_s), tx_ct - cx_s)
+                ang_override = math.atan2(ty_ct - cy_s, -(tx_ct - cx_s))
         append_furniture(lbl, box, model_file, confidence=round(item["conf"], 2), angle_rad=ang_override)
 
-    # Add 4 dining chairs cleanly around each Dining Table if not already surrounded by chairs
+    # Add 4 dining chairs cleanly around each Dining Table if not already surrounded by chairs (Chair1 faces -Z at yaw=0)
     ch_half = max(5.5, door_px * 0.16)
     for db in dining_boxes:
         dcx, dcy = (db[0] + db[2]) / 2.0, (db[1] + db[3]) / 2.0
@@ -1128,7 +1135,7 @@ async def detect_floorplan(
         if dw >= dh:
             dx_off, dy_off = max(door_px * 0.30, dw * 0.22), max(door_px * 0.36, dh * 0.44)
             for sx in (-1.0, 1.0):
-                for py, ang in ((dcy - dy_off, 0.0), (dcy + dy_off, math.pi)):
+                for py, ang in ((dcy - dy_off, math.pi), (dcy + dy_off, 0.0)):
                     px = dcx + sx * dx_off
                     cbox = [px - ch_half, py - ch_half, px + ch_half, py + ch_half]
                     if 0 <= int(py) < orig_h and 0 <= int(px) < orig_w and clean_wall_mask[int(py), int(px)] == 0:
@@ -1136,22 +1143,22 @@ async def detect_floorplan(
         else:
             dx_off, dy_off = max(door_px * 0.36, dw * 0.44), max(door_px * 0.30, dh * 0.22)
             for sy in (-1.0, 1.0):
-                for px, ang in ((dcx - dx_off, math.pi / 2.0), (dcx + dx_off, -math.pi / 2.0)):
+                for px, ang in ((dcx - dx_off, -math.pi / 2.0), (dcx + dx_off, math.pi / 2.0)):
                     py = dcy + sy * dy_off
                     cbox = [px - ch_half, py - ch_half, px + ch_half, py + ch_half]
                     if 0 <= int(py) < orig_h and 0 <= int(px) < orig_w and clean_wall_mask[int(py), int(px)] == 0:
                         append_furniture("chair", cbox, "Chair1.glb", confidence=0.86, angle_rad=ang)
 
-    # Aim any free-standing lounge chairs toward the nearest coffee/living table
-    coffee_tables = [f for f in furniture if f.get("model_file") == "TableS2.glb"]
-    if coffee_tables:
+    # Aim any free-standing chairs toward the nearest coffee table or desk (Chair1 faces -Z at yaw=0)
+    look_targets = [f for f in furniture if f.get("model_file") in ("TableS2.glb", "Desk1.glb")]
+    if look_targets:
         for item in furniture:
             if item["label"] == "chair" and not any(_boxes_overlap_ratio(item["box"], db) > 0 for db in dining_boxes):
                 cx, cy = item["center"]
-                nearest_t = min(coffee_tables, key=lambda t: math.hypot(t["center"][0] - cx, t["center"][1] - cy))
+                nearest_t = min(look_targets, key=lambda t: math.hypot(t["center"][0] - cx, t["center"][1] - cy))
                 tx, ty = nearest_t["center"]
-                if math.hypot(tx - cx, ty - cy) <= max(orig_w, orig_h) * 0.22:
-                    ang = math.atan2(tx - cx, ty - cy)
+                if math.hypot(tx - cx, ty - cy) <= door_px * 5.0:
+                    ang = math.atan2(-(tx - cx), -(ty - cy))
                     item["angle_rad"] = round(ang, 4)
                     item["angle_deg"] = round(math.degrees(ang), 1)
 
