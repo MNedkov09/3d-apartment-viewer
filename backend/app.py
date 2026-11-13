@@ -551,17 +551,37 @@ async def detect_floorplan(
             pw, ph = px2 - px1, py2 - py1
             if pw >= ph:
                 py = (py1 + py2) / 2.0
+                best_sy, best_score = py, 1e9
                 for sx1, sy1, sx2, sy2, seg_h in wall_segments:
-                    if seg_h and abs(sy1 - py) <= 8:
-                        py = sy1
-                        break
+                    if not seg_h:
+                        continue
+                    d = abs(sy1 - py)
+                    if d > 8.0:
+                        continue
+                    gap_x = max(0.0, max(px1 - sx2, sx1 - px2))
+                    if gap_x <= 14.0:
+                        score = d + gap_x * 0.35
+                        if score < best_score:
+                            best_score = score
+                            best_sy = sy1
+                py = best_sy
                 door_seg = ([px1, py], [px2, py], max(ph, 6.0))
             else:
                 px = (px1 + px2) / 2.0
+                best_sx, best_score = px, 1e9
                 for sx1, sy1, sx2, sy2, seg_h in wall_segments:
-                    if not seg_h and abs(sx1 - px) <= 8:
-                        px = sx1
-                        break
+                    if seg_h:
+                        continue
+                    d = abs(sx1 - px)
+                    if d > 8.0:
+                        continue
+                    gap_y = max(0.0, max(py1 - sy2, sy1 - py2))
+                    if gap_y <= 14.0:
+                        score = d + gap_y * 0.35
+                        if score < best_score:
+                            best_score = score
+                            best_sx = sx1
+                px = best_sx
                 door_seg = ([px, py1], [px, py2], max(pw, 6.0))
         else:
             best_score = 1e9
