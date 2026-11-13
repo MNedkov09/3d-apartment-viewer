@@ -948,11 +948,10 @@ async def detect_floorplan(
         if cp["plant_ignore"] >= 0.26 or (cp["noise_ignore"] >= 0.36 and not ocr_hit and not pr["hint"]):
             continue
 
-        # Skip built-in kitchen counters early (even when 'SINK' is printed along the counter)
+        # Skip wall-attached built-in kitchen counters early (free-standing kitchen islands stay detectable as tables)
         if rtype == "kitchen_dining":
             if (
-                (cp["kitchen_counter"] >= 0.85 and cp["dining_table"] < 0.04)
-                or (cp["kitchen_counter"] >= 0.45 and ws_cnt >= 1)
+                (cp["kitchen_counter"] >= 0.45 and ws_cnt >= 1)
                 or ws_cnt >= 2
                 or ("sink" in ocr_hits_near and d_area >= 1.65)
                 or (ws_cnt >= 1 and d_area >= 1.80 and aspect >= 2.0 and d_min >= 0.85)
