@@ -54,6 +54,8 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   const [error, setError] = useState("");
 
   const cachedDetectionsRef = useRef(new Map());
+  const abortControllerRef = useRef(null);
+  const detectRunIdRef = useRef(0);
 
   const drawOverlay = useCallback(
     (img, edgeList, winList, doorList, furnList, fixList) => {
@@ -151,7 +153,14 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
   }, [showWalls, showWindows, showDoors, showFurniture, edges, windows, doors, furniture, fixtures, view, drawOverlay]);
 
   const runDetection = useCallback(
-    async (img) => {
+    async (img, targetSrc) => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const runId = ++detectRunIdRef.current;
+
       setProcessing(true);
       setError("");
       const canvas = canvasRef.current;
@@ -177,6 +186,8 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         const blob = await new Promise((resolve) =>
           offscreen.toBlob(resolve, "image/png"),
         );
+        if (controller.signal.aborted || runId !== detectRunIdRef.current) return;
+
         const formData = new FormData();
         formData.append("file", blob, "plan.png");
         formData.append("conf", "0.12");
@@ -187,6 +198,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         const res = await fetch("/api/floorplan/detect", {
           method: "POST",
           body: formData,
+          signal: controller.signal,
         });
 
         if (!res.ok) {
@@ -194,6 +206,8 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
         }
 
         const data = await res.json();
+        if (controller.signal.aborted || runId !== detectRunIdRef.current) return;
+
         const detectedEdges = data.wall_edges || [];
         const detectedWindows = data.windows || [];
         const detectedDoors = data.doors || [];
@@ -210,7 +224,7 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           rooms: detectedRooms,
           stats: data.stats,
         };
-        cachedDetectionsRef.current.set(imageSrc, resultObj);
+        cachedDetectionsRef.current.set(targetSrc, resultObj);
 
         setEdges(detectedEdges);
         setWindows(detectedWindows);
@@ -229,13 +243,16 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
           detectedFixtures,
         );
       } catch (err) {
+        if (err?.name === "AbortError") return;
         console.error("Floorplan detection error:", err);
         setError(err.message || "Failed to analyze floorplan.");
       } finally {
-        setProcessing(false);
+        if (runId === detectRunIdRef.current) {
+          setProcessing(false);
+        }
       }
     },
-    [drawOverlay, imageSrc],
+    [drawOverlay],
   );
 
   useEffect(() => {
@@ -281,21 +298,37 @@ export default function FloorplanViewer({ imageSrc, blueprintTitle }) {
       return;
     }
 
+    // Clear previous blueprint's detections immediately so stale overlays never flash over the new image
+    setEdges(null);
+    setWindows([]);
+    setDoors([]);
+    setFurniture([]);
+    setFixtures([]);
+    setRooms({});
+    setStats(null);
+
     if (view !== "2d") return;
 
+    let cancelled = false;
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.onload = () => {
+      if (cancelled) return;
       imgRef.current = image;
-      runDetection(image);
+      runDetection(image, imageSrc);
     };
     image.onerror = () => {
+      if (cancelled) return;
       setError("Failed to load blueprint image.");
       setProcessing(false);
     };
     image.src = imageSrc;
 
     return () => {
+      cancelled = true;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       if (imgRef.current?.src === imageSrc) imgRef.current = null;
     };
   }, [imageSrc, view, drawOverlay, runDetection]);
